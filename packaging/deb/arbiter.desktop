@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Arbiter
+GenericName=Shared-radio arbiter
+Comment=Holds Subspace, fldigi and VarAC through their own switches so they never key over each other
+Exec=/usr/bin/arbiter
+Icon=arbiter
+Terminal=false
+Categories=HamRadio;Network;

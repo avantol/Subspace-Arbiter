@@ -1,0 +1,60 @@
+# Linux amd64 build of the Arbiter: distro Qt 6 on Ubuntu 24.04, a .deb from
+# packaging/build-deb.sh, and the bench (tests/scenarios.py) run against the
+# binary. On a v* tag the .deb is attached to the GitHub Release.
+name: Linux amd64 build
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build g++ qt6-base-dev libqt6sql6-sqlite dpkg-dev
+
+      - name: Version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF#refs/tags/v}"
+          else
+            VER="$(grep -oP 'project\(Arbiter VERSION \K[0-9.]+' CMakeLists.txt)-dev.${GITHUB_SHA:0:8}"
+          fi
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "Version: $VER"
+
+      - name: Configure and build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DARBITER_VERSION_STRING="${{ steps.ver.outputs.ver }}"
+          cmake --build build
+          build/arbiter --version
+
+      - name: Bench against the binary
+        run: |
+          QT_QPA_PLATFORM=offscreen ARBITER_BIN="$PWD/build/arbiter" python3 tests/scenarios.py
+
+      - name: Package
+        run: |
+          packaging/build-deb.sh "${{ steps.ver.outputs.ver }}" amd64
+          dpkg-deb -I arbiter_*_amd64.deb
+          dpkg-deb -c arbiter_*_amd64.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Arbiter-linux-amd64-${{ steps.ver.outputs.ver }}
+          path: arbiter_*_amd64.deb
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: arbiter_*_amd64.deb

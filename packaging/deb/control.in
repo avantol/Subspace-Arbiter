@@ -1,0 +1,15 @@
+Package: arbiter
+Version: @VERSION@
+Section: hamradio
+Priority: optional
+Architecture: @ARCH@
+Depends: libqt6core6t64 | libqt6core6, libqt6gui6t64 | libqt6gui6, libqt6widgets6t64 | libqt6widgets6, libqt6network6t64 | libqt6network6, libqt6sql6t64 | libqt6sql6, libqt6sql6-sqlite, libc6, libstdc++6
+Maintainer: WM8Q <ssdev.avantol@xoxy.net>
+Homepage: https://github.com/avantol/Subspace-Arbiter
+Description: Arbiter for a shared radio (Subspace, fldigi, VarAC through flrig)
+ One radio, several programs. Whatever is already transmitting finishes;
+ the arbiter holds only what has not started, by throwing each program's
+ own switch (Subspace's TX enable over its API, fldigi's receive-only,
+ VarAC's cluster PTT lock), and never refuses or delays a PTT. A client
+ of flrig, never a link in the CAT chain: stop it and every program works
+ as before. No settings needed on a standard MAGNET station.

@@ -1,0 +1,82 @@
+# Windows build of the Arbiter: MSYS2 MINGW64 Qt 6, windeployqt, Inno Setup
+# installer. The same toolchain Subspace Edition is built with. On a v* tag
+# the installer is attached to the GitHub Release; branch pushes upload it
+# as a workflow artifact only.
+name: Windows build
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          pacboy: >-
+            toolchain:p cmake:p ninja:p qt6-base:p qt6-tools:p
+
+      - name: Version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF#refs/tags/v}"
+          else
+            VER="$(grep -oP 'project\(Arbiter VERSION \K[0-9.]+' CMakeLists.txt)-dev.${GITHUB_SHA:0:8}"
+          fi
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "Version: $VER"
+
+      - name: Configure and build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DARBITER_VERSION_STRING="${{ steps.ver.outputs.ver }}"
+          cmake --build build
+
+      - name: Gather runtime DLLs
+        run: |
+          cd build/Arbiter
+          cp ../../LICENSE .
+          # the MinGW runtime DLLs windeployqt does not know about, found the
+          # way Subspace Edition's workflow finds them: by walking the imports
+          walk_deps() {
+            objdump -p "$1" 2>/dev/null | grep -i "DLL Name" | awk '{print $3}' | while read -r d; do
+              if [ -f "/mingw64/bin/$d" ] && [ ! -f "$d" ]; then
+                cp "/mingw64/bin/$d" . && echo "  + $d" && walk_deps "$d"
+              fi
+            done
+          }
+          walk_deps Arbiter.exe
+          for p in */*.dll Qt6*.dll; do [ -f "$p" ] && walk_deps "$p"; done
+          # only the SQLite driver is needed
+          find sqldrivers -name '*.dll' ! -name 'qsqlite.dll' -delete 2>/dev/null || true
+          ls sqldrivers
+          strip Arbiter.exe
+          ls -la
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.ver.outputs.ver }} installer\arbiter.iss
+          Get-ChildItem installer\Output
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Arbiter-windows-${{ steps.ver.outputs.ver }}
+          path: installer/Output/Arbiter_*_win64.exe
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/Output/Arbiter_*_win64.exe

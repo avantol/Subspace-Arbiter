@@ -1,0 +1,8 @@
+arbiter.ini
+arbiter.log
+__pycache__/
+*.pyc
+build/
+pkg-staging/
+*.deb
+installer/Output/

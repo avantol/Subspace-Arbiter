@@ -1,0 +1,2 @@
+#pragma once
+#define ARBITER_VERSION "@ARBITER_VERSION_STRING@"
