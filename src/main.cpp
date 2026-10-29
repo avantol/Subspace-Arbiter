@@ -30,10 +30,15 @@ static void onSignal(int) { char c = 1; if (::write(sigFds[0], &c, 1) < 0) {} }
 #endif
 
 int main(int argc, char *argv[]) {
-    // --console needs no display: a plain core application then (headless Linux boxes)
+    // --console needs no display: a plain core application then (headless Linux
+    // boxes); so do --version, --help and --write-ini, which never open a window
     bool consoleMode = false;
-    for (int i = 1; i < argc; ++i)
-        if (QString::fromLocal8Bit(argv[i]) == "--console") consoleMode = true;
+    for (int i = 1; i < argc; ++i) {
+        QString a = QString::fromLocal8Bit(argv[i]);
+        if (a == "--console" || a == "--version" || a == "-v" || a == "--help" || a == "-h" ||
+            a == "--write-ini")
+            consoleMode = true;
+    }
     std::unique_ptr<QCoreApplication> appPtr;
     if (consoleMode) appPtr = std::make_unique<QCoreApplication>(argc, argv);
     else appPtr = std::make_unique<QApplication>(argc, argv);

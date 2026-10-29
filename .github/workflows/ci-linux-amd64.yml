@@ -36,7 +36,7 @@ jobs:
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DARBITER_VERSION_STRING="${{ steps.ver.outputs.ver }}"
           cmake --build build
-          build/arbiter --version
+          QT_QPA_PLATFORM=offscreen build/arbiter --version
 
       - name: Bench against the binary
         run: |

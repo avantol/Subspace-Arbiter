@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Arbiter VERSION 1.0.0 LANGUAGES CXX)
+project(Arbiter VERSION 1.0.1 LANGUAGES CXX)
 
 # The version string the program shows and the packages carry. CI passes the
 # tag (v1.0.0 -> 1.0.0) or a branch build (1.0.0-dev.<sha>); a plain build
