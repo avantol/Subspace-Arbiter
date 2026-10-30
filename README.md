@@ -7,7 +7,7 @@ Arbiter is a small helper that keeps them from keying over each other.
 
 Whatever is already transmitting finishes. The Arbiter holds only what
 has not started, by throwing each program's own switch, and it never
-refuses, swallows or delays a PTT.
+refuses, ignores, or delays a PTT.
 
 ## What it does, in plain words
 
