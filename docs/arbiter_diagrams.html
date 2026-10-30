@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Arbiter: signal flow and wiring</title>
+<style>
+ @page { size: letter; margin: 14mm 14mm; }
+ body { font-family: "Liberation Sans", Arial, sans-serif; font-size: 10.5pt; color: #1a1a1a; margin: 0; }
+ h1 { font-size: 16pt; margin: 0 0 2pt 0; }
+ h2 { font-size: 12.5pt; margin: 14pt 0 6pt 0; border-bottom: 1pt solid #888; padding-bottom: 2pt; page-break-after: avoid; }
+ p.sub { font-size: 9pt; color: #555; margin: 0 0 6pt 0; }
+ p.rule { background: #eef2f7; border-left: 3pt solid #5a7fa8; padding: 6pt 8pt; margin: 6pt 0 8pt 0; font-size: 10.5pt; }
+ svg { display: block; margin: 4pt auto 6pt auto; }
+ table { border-collapse: collapse; width: 100%; margin-top: 4pt; page-break-inside: avoid; }
+ th { background: #e8e8e8; text-align: left; font-size: 9.5pt; border: 0.6pt solid #999; padding: 4pt 5pt; }
+ td { border: 0.6pt solid #999; padding: 4pt 5pt; vertical-align: top; font-size: 9.5pt; }
+ td.t { white-space: nowrap; font-weight: bold; }
+ .mono { font-family: "Liberation Mono", "Courier New", monospace; font-size: 9.5pt; }
+ ul { margin: 4pt 0 0 0; padding-left: 16pt; }
+ li { margin-bottom: 5pt; }
+ .pb { page-break-before: always; }
+ .foot { font-size: 8.5pt; color: #555; margin-top: 12pt; border-top: 0.6pt solid #bbb; padding-top: 4pt; }
+ .legend { font-size: 9pt; color: #333; margin: 0 0 4pt 0; }
+ .legend span { display: inline-block; margin-right: 14pt; }
+ .sw { display: inline-block; width: 22pt; height: 0; border-top: 2.2pt solid; vertical-align: middle; margin-right: 4pt; }
+</style></head>
+<body>
+
+<h1>Arbiter: signal flow and wiring</h1>
+<p class="sub">One radio, several programs (Subspace, fldigi, VarAC with VARA) through
+flrig. The Arbiter is a helper beside flrig. These two pictures show what talks to
+what, and what is actually wired to what. Arbiter 1.0.1, WM8Q, 2026-10-29.</p>
+
+<p class="rule"><b>Whatever is already transmitting finishes. The Arbiter holds only what
+has not started, by throwing each program's own switch, and it never refuses, swallows
+or delays a PTT.</b></p>
+
+<h2>1. Signal flow: who sees what, who holds whom</h2>
+<p class="legend">
+ <span><i class="sw" style="border-color:#777"></i>normal CAT traffic (every program as today)</span>
+ <span><i class="sw" style="border-color:#2a7f3f"></i>the Arbiter sees (read only)</span>
+ <span><i class="sw" style="border-color:#b4322a"></i>the Arbiter holds (the program's own switch)</span>
+</p>
+
+<svg width="720" height="590" viewBox="0 0 760 622" xmlns="http://www.w3.org/2000/svg" font-family="Liberation Sans, Arial, sans-serif" font-size="12">
+ <defs>
+  <marker id="ag" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#777"/></marker>
+  <marker id="agr" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#2a7f3f"/></marker>
+  <marker id="ard" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#b4322a"/></marker>
+ </defs>
+
+ <!-- the radio and its chain, top left -->
+ <rect x="20" y="12" width="200" height="44" rx="8" fill="#f4f4f4" stroke="#333" stroke-width="1.4"/>
+ <text x="120" y="31" text-anchor="middle" font-weight="bold">RADIO</text>
+ <text x="120" y="47" text-anchor="middle" font-size="10.5">IC-7300, IC-705, FT-DX10 ...</text>
+
+ <rect x="30" y="100" width="180" height="44" rx="8" fill="#fff" stroke="#333" stroke-width="1.4"/>
+ <text x="120" y="119" text-anchor="middle" font-weight="bold">flrig</text>
+ <text x="120" y="135" text-anchor="middle" font-size="10.5">the only program on the CAT line</text>
+ <line x1="120" y1="100" x2="120" y2="58" stroke="#777" stroke-width="2" marker-end="url(#ag)"/>
+ <text x="232" y="82" font-size="10.5" fill="#444">CAT + PTT, serial over USB</text>
+
+ <rect x="30" y="184" width="180" height="44" rx="8" fill="#fff" stroke="#333" stroke-width="1.2" stroke-dasharray="5,4"/>
+ <text x="120" y="203" text-anchor="middle" font-weight="bold">CAT Watch</text>
+ <text x="120" y="219" text-anchor="middle" font-size="10.5">optional recorder, port 12345</text>
+ <line x1="120" y1="184" x2="120" y2="146" stroke="#777" stroke-width="2" marker-end="url(#ag)"/>
+ <text x="232" y="166" font-size="10.5" fill="#444">forwards to flrig on 12346; without CAT Watch,</text>
+ <text x="232" y="180" font-size="10.5" fill="#444">flrig itself answers on 12345 and nothing else changes</text>
+
+ <!-- the CAT trunk: every program's set_ptt and polls, up into CAT Watch -->
+ <line x1="120" y1="520" x2="120" y2="232" stroke="#777" stroke-width="2" marker-end="url(#ag)"/>
+ <line x1="120" y1="295" x2="170" y2="295" stroke="#777" stroke-width="2"/>
+ <line x1="120" y1="395" x2="170" y2="395" stroke="#777" stroke-width="2"/>
+ <line x1="120" y1="495" x2="170" y2="495" stroke="#777" stroke-width="2"/>
+ <text x="30" y="260" font-size="10" fill="#444">every program's</text>
+ <text x="30" y="273" font-size="10" fill="#444">set_ptt, set_vfo,</text>
+ <text x="30" y="286" font-size="10" fill="#444">polls: port 12345</text>
+
+ <!-- the programs, stacked -->
+ <rect x="170" y="270" width="160" height="50" rx="8" fill="#fff" stroke="#333" stroke-width="1.4"/>
+ <text x="250" y="290" text-anchor="middle" font-weight="bold">Subspace</text>
+ <text x="250" y="306" text-anchor="middle" font-size="10.5">JS8 and JTTY</text>
+ <rect x="170" y="370" width="160" height="50" rx="8" fill="#fff" stroke="#333" stroke-width="1.4"/>
+ <text x="250" y="390" text-anchor="middle" font-weight="bold">fldigi</text>
+ <text x="250" y="406" text-anchor="middle" font-size="10.5">digital modes</text>
+ <rect x="170" y="470" width="160" height="50" rx="8" fill="#fff" stroke="#333" stroke-width="1.4"/>
+ <text x="250" y="490" text-anchor="middle" font-weight="bold">VarAC + VARA</text>
+ <text x="250" y="506" text-anchor="middle" font-size="10.5">chat and links</text>
+
+ <!-- the arbiter -->
+ <rect x="580" y="250" width="160" height="290" rx="10" fill="#eaf1fb" stroke="#2b5c9e" stroke-width="2"/>
+ <text x="660" y="278" text-anchor="middle" font-weight="bold" fill="#2b5c9e">ARBITER</text>
+ <text x="660" y="296" text-anchor="middle" font-size="10.5" fill="#2b5c9e">a client of each program,</text>
+ <text x="660" y="310" text-anchor="middle" font-size="10.5" fill="#2b5c9e">never a proxy</text>
+ <text x="660" y="440" text-anchor="middle" font-size="10.5" fill="#2b5c9e">one tick every 200 ms:</text>
+ <text x="660" y="455" text-anchor="middle" font-size="10.5" fill="#2b5c9e">who is transmitting,</text>
+ <text x="660" y="470" text-anchor="middle" font-size="10.5" fill="#2b5c9e">who is held, who is</text>
+ <text x="660" y="485" text-anchor="middle" font-size="10.5" fill="#2b5c9e">released</text>
+
+ <!-- the arbiter reads flrig: up and over to CAT Watch -->
+ <line x1="660" y1="250" x2="660" y2="206" stroke="#2a7f3f" stroke-width="2"/>
+ <line x1="660" y1="206" x2="214" y2="206" stroke="#2a7f3f" stroke-width="2" marker-end="url(#agr)"/>
+ <text x="440" y="200" text-anchor="middle" font-size="10.5" fill="#2a7f3f">get_ptt, get_vfo on 12345: read only, never set_ptt</text>
+
+ <!-- Subspace: sees (green) and holds (red) -->
+ <text x="340" y="268" font-size="10" fill="#2a7f3f">sees: API port 2442, the events</text>
+ <text x="340" y="280" font-size="10" fill="#2a7f3f">RIG.PTT, TX.COMPLETE, TX.ENABLED</text>
+ <line x1="580" y1="288" x2="334" y2="288" stroke="#2a7f3f" stroke-width="2" marker-end="url(#agr)"/>
+ <line x1="580" y1="304" x2="334" y2="304" stroke="#b4322a" stroke-width="2" marker-end="url(#ard)"/>
+ <text x="340" y="319" font-size="10" fill="#b4322a">holds: TX.SET_ENABLED off, reason shown</text>
+ <text x="340" y="331" font-size="10" fill="#b4322a">("TX disabled by VARA link"), a 300 s lease</text>
+
+ <!-- fldigi -->
+ <text x="340" y="368" font-size="10" fill="#2a7f3f">sees: XML-RPC port 7362,</text>
+ <text x="340" y="380" font-size="10" fill="#2a7f3f">main.get_trx_state (TX or RX)</text>
+ <line x1="580" y1="388" x2="334" y2="388" stroke="#2a7f3f" stroke-width="2" marker-end="url(#agr)"/>
+ <line x1="580" y1="404" x2="334" y2="404" stroke="#b4322a" stroke-width="2" marker-end="url(#ard)"/>
+ <text x="340" y="419" font-size="10" fill="#b4322a">holds: main.rx_only while idle,</text>
+ <text x="340" y="431" font-size="10" fill="#b4322a">main.rx_tx to release (stock fldigi since 2014)</text>
+
+ <!-- VarAC -->
+ <text x="340" y="468" font-size="10" fill="#2a7f3f">sees: its command log (PTT, CONNECTED,</text>
+ <text x="340" y="480" font-size="10" fill="#2a7f3f">PENDING) and its keepalive in VarAC.db</text>
+ <line x1="580" y1="488" x2="334" y2="488" stroke="#2a7f3f" stroke-width="2" marker-end="url(#agr)"/>
+ <line x1="580" y1="504" x2="334" y2="504" stroke="#b4322a" stroke-width="2" marker-end="url(#ard)"/>
+ <text x="340" y="519" font-size="10" fill="#b4322a">holds: the cluster PTT lock, an "Arbiter" row</text>
+ <text x="340" y="531" font-size="10" fill="#b4322a">in VarAC.db marked busy ("PTT is disabled")</text>
+
+ <text x="30" y="580" font-size="10.5" fill="#444">Every red arrow is a switch the program already has. Every green arrow is a read.</text>
+ <text x="30" y="595" font-size="10.5" fill="#444">The grey arrows carry the station's normal CAT traffic, unchanged. Stop the Arbiter and the picture above the dotted box is the station as before.</text>
+</svg>
+
+<h2>2. A hold, step by step: VarAC calls CQ while Subspace is idle</h2>
+<table>
+<tr><th style="width:9%">time</th><th style="width:16%">from</th><th style="width:16%">to</th><th>what</th></tr>
+<tr><td class="t">0.00 s</td><td>VarAC</td><td>flrig</td><td><span class="mono">rig.set_ptt 1</span>: the radio keys. VarAC writes "PTT ON" to its command log.</td></tr>
+<tr><td class="t">&lt; 0.20 s</td><td>Arbiter</td><td>flrig, log</td><td>Its poll sees the radio keyed; the log line says it is VARA's. Reason: "VARA TX".</td></tr>
+<tr><td class="t">0.20 s</td><td>Arbiter</td><td>Subspace</td><td><span class="mono">TX.SET_ENABLED false</span>, reason "VARA TX": Subspace's status bar shows "TX disabled by VARA TX"; a Send is refused with that text.</td></tr>
+<tr><td class="t">0.20 s</td><td>Arbiter</td><td>fldigi</td><td><span class="mono">main.rx_only</span>: fldigi's T/R and Tune grey out; macros will not key.</td></tr>
+<tr><td class="t">5.4 s</td><td>VarAC</td><td>flrig</td><td><span class="mono">rig.set_ptt 0</span>: the radio unkeys. "PTT OFF" in the log.</td></tr>
+<tr><td class="t">+12 s</td><td colspan="3">The hold lingers 12 s after a VARA burst, so the gaps inside a link or between connect requests do not flick the other programs off and on. After a link, DISCONNECTED ends it at once.</td></tr>
+<tr><td class="t">release</td><td>Arbiter</td><td>Subspace, fldigi</td><td><span class="mono">TX.SET_ENABLED true</span>, <span class="mono">main.rx_tx</span>: both back as they were, 0.3 s after the radio is clear.</td></tr>
+</table>
+<p class="sub" style="margin-top:4pt">Measured on WM8Q's station, 2026-10-29, with CAT Watch recording: hold 200 ms after VarAC's PTT reached flrig, release 290 ms after its PTT off. The same shape held a real 3 min 42 s VARA QSO end to end.</p>
+
+<h2 class="pb">3. Wiring: what is actually connected to what</h2>
+<p class="sub">Cables and port numbers. Only three things reach the radio: one audio path,
+one CAT line, one antenna. Nothing of the Arbiter's touches any of them.</p>
+
+<svg width="720" height="610" viewBox="0 0 760 640" xmlns="http://www.w3.org/2000/svg" font-family="Liberation Sans, Arial, sans-serif" font-size="12">
+ <defs>
+  <marker id="wg" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#777"/></marker>
+  <marker id="wb" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#2b5c9e"/></marker>
+ </defs>
+
+ <!-- the PC -->
+ <rect x="16" y="16" width="728" height="440" rx="10" fill="#fbfbfb" stroke="#333" stroke-width="1.4"/>
+ <text x="30" y="36" font-weight="bold">THE STATION PC</text>
+ <text x="730" y="36" text-anchor="end" font-size="10.5" fill="#444">Windows, or Linux with VarAC under Wine</text>
+
+ <!-- program boxes -->
+ <rect x="40" y="60" width="130" height="50" rx="8" fill="#fff" stroke="#333" stroke-width="1.4"/>
+ <text x="105" y="80" text-anchor="middle" font-weight="bold">Subspace</text>
+ <text x="105" y="96" text-anchor="middle" font-size="10.5">API on 2442</text>
+ <rect x="200" y="60" width="130" height="50" rx="8" fill="#fff" stroke="#333" stroke-width="1.4"/>
+ <text x="265" y="80" text-anchor="middle" font-weight="bold">fldigi</text>
+ <text x="265" y="96" text-anchor="middle" font-size="10.5">XML-RPC on 7362</text>
+ <rect x="360" y="60" width="110" height="50" rx="8" fill="#fff" stroke="#333" stroke-width="1.4"/>
+ <text x="415" y="80" text-anchor="middle" font-weight="bold">VarAC</text>
+ <text x="415" y="96" text-anchor="middle" font-size="10.5">the chat program</text>
+ <rect x="480" y="60" width="90" height="50" rx="8" fill="#fff" stroke="#333" stroke-width="1.4"/>
+ <text x="525" y="80" text-anchor="middle" font-weight="bold">VARA HF</text>
+ <text x="525" y="96" text-anchor="middle" font-size="10.5">the modem</text>
+ <line x1="470" y1="85" x2="480" y2="85" stroke="#333" stroke-width="2"/>
+ <text x="525" y="124" text-anchor="middle" font-size="10" fill="#444">TCP 8300 / 8301, VarAC's alone</text>
+ <rect x="600" y="60" width="130" height="50" rx="8" fill="#eaf1fb" stroke="#2b5c9e" stroke-width="2"/>
+ <text x="665" y="80" text-anchor="middle" font-weight="bold" fill="#2b5c9e">ARBITER</text>
+ <text x="665" y="96" text-anchor="middle" font-size="10.5" fill="#2b5c9e">four wires, all inside</text>
+
+ <!-- arbiter's wires to Subspace and fldigi (blue, dashed) -->
+ <line x1="620" y1="110" x2="620" y2="150" stroke="#2b5c9e" stroke-width="2" stroke-dasharray="6,4"/>
+ <line x1="620" y1="150" x2="125" y2="150" stroke="#2b5c9e" stroke-width="2" stroke-dasharray="6,4"/>
+ <line x1="125" y1="150" x2="125" y2="114" stroke="#2b5c9e" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#wb)"/>
+ <text x="135" y="146" font-size="10" fill="#2b5c9e">127.0.0.1:2442</text>
+ <line x1="640" y1="110" x2="640" y2="168" stroke="#2b5c9e" stroke-width="2" stroke-dasharray="6,4"/>
+ <line x1="640" y1="168" x2="285" y2="168" stroke="#2b5c9e" stroke-width="2" stroke-dasharray="6,4"/>
+ <line x1="285" y1="168" x2="285" y2="114" stroke="#2b5c9e" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#wb)"/>
+ <text x="295" y="164" font-size="10" fill="#2b5c9e">127.0.0.1:7362</text>
+
+ <!-- VarAC files -->
+ <rect x="360" y="186" width="230" height="40" rx="6" fill="#fff" stroke="#777" stroke-width="1.2"/>
+ <text x="475" y="202" text-anchor="middle" font-size="10.5" font-weight="bold">VarAC's files</text>
+ <text x="475" y="217" text-anchor="middle" font-size="10">VarAC_vara_commands.log, VarAC.db</text>
+ <line x1="415" y1="110" x2="415" y2="186" stroke="#777" stroke-width="1.6"/>
+ <text x="422" y="135" font-size="10" fill="#444">written by VarAC</text>
+ <line x1="660" y1="110" x2="660" y2="206" stroke="#2b5c9e" stroke-width="2" stroke-dasharray="6,4"/>
+ <line x1="660" y1="206" x2="594" y2="206" stroke="#2b5c9e" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#wb)"/>
+ <text x="600" y="246" font-size="10" fill="#2b5c9e">read; one "Arbiter" row written</text>
+
+ <!-- CAT bus to CAT Watch / flrig -->
+ <line x1="80" y1="110" x2="80" y2="270" stroke="#777" stroke-width="2"/>
+ <line x1="240" y1="110" x2="240" y2="270" stroke="#777" stroke-width="2"/>
+ <line x1="390" y1="110" x2="390" y2="148" stroke="#777" stroke-width="2"/>
+ <line x1="390" y1="148" x2="345" y2="148" stroke="#777" stroke-width="2"/>
+ <line x1="345" y1="148" x2="345" y2="270" stroke="#777" stroke-width="2"/>
+ <line x1="690" y1="110" x2="690" y2="270" stroke="#2b5c9e" stroke-width="2"/>
+ <line x1="80" y1="270" x2="690" y2="270" stroke="#777" stroke-width="2"/>
+ <line x1="380" y1="270" x2="380" y2="296" stroke="#777" stroke-width="2" marker-end="url(#wg)"/>
+ <text x="40" y="287" font-size="10" fill="#444">every program's CAT and PTT: TCP 127.0.0.1:12345</text>
+ <text x="696" y="262" font-size="10" fill="#2b5c9e" text-anchor="end">12345, read only</text>
+
+ <rect x="260" y="298" width="240" height="40" rx="8" fill="#fff" stroke="#333" stroke-width="1.2" stroke-dasharray="5,4"/>
+ <text x="380" y="315" text-anchor="middle" font-weight="bold">CAT Watch on 12345</text>
+ <text x="380" y="330" text-anchor="middle" font-size="10.5">optional; names each request by its process</text>
+ <line x1="380" y1="338" x2="380" y2="366" stroke="#777" stroke-width="2" marker-end="url(#wg)"/>
+ <text x="392" y="356" font-size="10" fill="#444">12346</text>
+ <rect x="260" y="368" width="240" height="40" rx="8" fill="#fff" stroke="#333" stroke-width="1.4"/>
+ <text x="380" y="385" text-anchor="middle" font-weight="bold">flrig</text>
+ <text x="380" y="400" text-anchor="middle" font-size="10.5">on 12346 behind CAT Watch, else on 12345</text>
+ <text x="40" y="430" font-size="10" fill="#444">Sound: one audio device for all programs (the rig's USB codec, e.g. PCM2901), shared by the operating system's mixer.</text>
+ <text x="40" y="444" font-size="10" fill="#444">The Arbiter has no audio and no serial port.</text>
+
+ <!-- cables out of the PC -->
+ <line x1="380" y1="408" x2="380" y2="520" stroke="#333" stroke-width="2.4"/>
+ <text x="392" y="480" font-size="10.5" fill="#333">USB serial: CAT + PTT, flrig alone</text>
+ <line x1="150" y1="456" x2="150" y2="520" stroke="#333" stroke-width="2.4"/>
+ <text x="30" y="500" font-size="10.5" fill="#333">USB audio: in and out,</text>
+ <text x="30" y="513" font-size="10.5" fill="#333">every program's signal</text>
+
+ <!-- radio -->
+ <rect x="100" y="520" width="560" height="54" rx="10" fill="#f4f4f4" stroke="#333" stroke-width="1.6"/>
+ <text x="380" y="542" text-anchor="middle" font-weight="bold">RADIO</text>
+ <text x="380" y="560" text-anchor="middle" font-size="10.5">one audio in/out, one CAT and PTT line, one antenna</text>
+ <line x1="660" y1="547" x2="720" y2="547" stroke="#333" stroke-width="2.4"/>
+ <line x1="720" y1="547" x2="720" y2="600" stroke="#333" stroke-width="2.4"/>
+ <line x1="700" y1="600" x2="740" y2="600" stroke="#333" stroke-width="2.4"/>
+ <line x1="706" y1="608" x2="734" y2="608" stroke="#333" stroke-width="2.4"/>
+ <line x1="712" y1="616" x2="728" y2="616" stroke="#333" stroke-width="2.4"/>
+ <text x="664" y="594" font-size="10.5" fill="#333" text-anchor="end">antenna</text>
+</svg>
+
+<h2>4. Reading the wiring</h2>
+<ul>
+<li><b>Only three things reach the radio</b>: the audio (one sound device, shared by every program through the operating system's mixer), the serial/USB CAT line (owned by flrig alone), and the antenna. The Arbiter has none of them.</li>
+<li><b>flrig is the only program on the serial line.</b> Every program keys and tunes by asking flrig on 12345. With CAT Watch in front, flrig moves to 12346 and CAT Watch answers 12345; no program notices.</li>
+<li><b>The Arbiter has four wires, all inside the PC</b>: 12345 to flrig (reads PTT and the dial, never keys), 2442 to Subspace, 7362 to fldigi, and VarAC's two files. None runs through another program's path, so unplugging the Arbiter changes nothing above it.</li>
+<li><b>VarAC has no port the Arbiter could use</b>: VARA's 8300 and 8301 belong to VarAC alone, which is why VarAC is read and held through its own files.</li>
+<li><b>Audio is where collisions become real</b>: two programs keying at once put two signals into one audio channel on one keyed radio. That is what the holds prevent; the audio wiring is never changed.</li>
+</ul>
+
+<h2>5. Setup, once per station</h2>
+<table>
+<tr><th style="width:14%">Program</th><th>Setting</th><th style="width:34%">Why</th></tr>
+<tr><td class="t">Arbiter</td><td>Nothing. Defaults match a standard MAGNET station; an ini file exists only for exceptions.</td><td>Install and start.</td></tr>
+<tr><td class="t">Subspace</td><td>Settings &gt; Reporting: TCP API enabled; "Accept TCP requests" on; TCP max connections one higher than used now (SpotterX takes one or two, CAT Watch one, the Arbiter one).</td><td>The Arbiter's wire to Subspace. The window says "refused, raise TCP max connections" if the limit is reached.</td></tr>
+<tr><td class="t">fldigi</td><td>Configure &gt; Misc &gt; XML-RPC: server on, port 7362 (the default).</td><td>The Arbiter's wire to fldigi.</td></tr>
+<tr><td class="t">VarAC</td><td>Settings: "Log VARA commands" on. Settings &gt; Cluster: enabled, "PTT Lock" on. Restart VarAC.</td><td>The log is how VarAC is seen; the cluster lock is how it is held.</td></tr>
+<tr><td class="t">flrig</td><td>Nothing.</td><td>The Arbiter is one more read-only client.</td></tr>
+</table>
+
+<h2>6. Limits worth knowing</h2>
+<ul>
+<li>One poll (200 ms) of reaction time: a program that keys inside that window collides as it does today. No frame is ever lost to a refusal, because there is none.</li>
+<li>Keying that bypasses flrig (VOX, a separate PTT line) is invisible to the Arbiter.</li>
+<li>Subspace and VarAC release themselves if the Arbiter dies (300 s lease, 30 s keepalive). fldigi's stock switch has no expiry: a hard kill (not a close) while holding fldigi leaves it receive-only until fldigi is restarted.</li>
+<li>Do not stop and restart the Arbiter while it is holding: a stop releases everything.</li>
+</ul>
+
+<p class="foot">Sources: Arbiter 1.0.1 (github.com/avantol/Subspace-Arbiter), its requirements (arbiter_requirements_spec, 2026-10-28), and the live test on WM8Q's station 2026-10-29 recorded by CAT Watch 0.12 (arbiter.log and catwatch report-live2.txt). Port numbers are the programs' defaults.</p>
+
+</body></html>
