@@ -349,6 +349,33 @@ def scenario_8():
     return fails
 
 
+def scenario_9():
+    """fldigi's release goes out on the arbiter's own link, and is sent again until fldigi takes it."""
+    b = Bench()
+    fails = []
+    try:
+        b.start()
+        for n in (1, 2):
+            b.varalog.line("CONNECTED")
+            check(wait_for(lambda: b.held("fldigi") and b.fldigi.rx_only, 3.0), "fldigi held (%d)" % n, fails)
+            b.varalog.line("DISCONNECTED")
+            check(wait_for(lambda: not b.held("fldigi") and not b.fldigi.rx_only, 3.0), "fldigi released (%d)" % n, fails)
+        check(sum("fldigi: connected" in l for l in b.log_lines()) == 1,
+              "'fldigi: connected' logged once, not once per release", fails)
+        b.fldigi.refuse_rx_tx = 2
+        b.varalog.line("CONNECTED")
+        check(wait_for(lambda: b.held("fldigi") and b.fldigi.rx_only, 3.0), "fldigi held (3)", fails)
+        b.varalog.line("DISCONNECTED")
+        check(wait_for(lambda: b.logged("fldigi: rx_tx not accepted; sent again until fldigi answers"), 3.0),
+              "the refused rx_tx is logged", fails)
+        check(wait_for(lambda: not b.fldigi.rx_only, 6.0), "rx_tx sent again until fldigi takes it", fails)
+        check(wait_for(lambda: b.logged("fldigi: rx_tx accepted"), 2.0), "the accepted retry is logged", fails)
+        check(sum(c[0] == "rx_tx_refused" for c in b.fldigi.calls) == 2, "both refusals seen by fldigi", fails)
+    finally:
+        b.stop()
+    return fails
+
+
 SCENARIOS = {
     1: ("Replay of 27 Oct: auto-reply due during a VARA link", scenario_1),
     2: ("VARA keys while a Subspace message is in progress", scenario_2),
@@ -358,6 +385,7 @@ SCENARIOS = {
     6: ("fldigi in an over when a VARA link opens", scenario_6),
     7: ("Subspace 'Connections Full'", scenario_7),
     8: ("VarAC held through its cluster lock", scenario_8),
+    9: ("fldigi release on the arbiter's own link; refused rx_tx sent again", scenario_9),
 }
 
 

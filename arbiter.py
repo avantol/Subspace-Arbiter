@@ -296,8 +296,11 @@ class FldigiLink:
         self.reconnect_s = s.getfloat("timing", "reconnect_s")
         self.state = None     # "TX" / "RX" / None
         self.held = False     # we sent rx_only and have not sent rx_tx
+        self.release_failed = False   # rx_tx not accepted: sent again at every poll until it is
 
     def poll(self):
+        if self.release_failed and not self.held:
+            self._send_rx_tx(self.reconnect_s)
         r = self.link.call("main.get_trx_state", reconnect_s=self.reconnect_s)
         self.state = None if r is None else str(r).upper()
         if r is None and self.held:
@@ -314,14 +317,25 @@ class FldigiLink:
         if self.link.call("main.rx_only", reconnect_s=self.reconnect_s) is None and not self.link.up:
             return False
         self.held = True
+        self.release_failed = False   # the next release sends its own rx_tx
         return True
 
-    def release(self):
+    def release(self, closing=False):
         if not self.held:
             return False
         self.held = False
-        self.link.call("main.rx_tx", reconnect_s=0.0)
+        if not self._send_rx_tx(0.0) and closing:
+            self.log("fldigi: rx_tx not accepted (arbiter closing); fldigi may stay receive-only")
         return True
+
+    def _send_rx_tx(self, reconnect_s):
+        ok = self.link.call("main.rx_tx", reconnect_s=reconnect_s) is not None
+        if ok and self.release_failed:
+            self.log("fldigi: rx_tx accepted")
+        elif not ok and not self.release_failed:
+            self.log("fldigi: rx_tx not accepted; sent again until fldigi answers")
+        self.release_failed = not ok
+        return ok
 
 
 # ----------------------------------------------------------------------------
@@ -1047,13 +1061,13 @@ class Arbiter:
             self.lever.renew()
         # fldigi: rx_only has no lease; nothing to renew
 
-    def _release(self, p):
+    def _release(self, p, closing=False):
         if p is self.ss:
             if self.ss_hold_owned and self.subspace.up:
                 self.subspace.request("TX.SET_ENABLED", ENABLED=True)
             self.ss_hold_owned = False
         elif p is self.fl:
-            self.fldigi.release()
+            self.fldigi.release(closing)
         elif p is self.va:
             self.lever.release()
 
@@ -1082,7 +1096,7 @@ class Arbiter:
             for p in self.programs:
                 if p.held:
                     try:
-                        self._release(p)
+                        self._release(p, closing=True)
                     except Exception:
                         pass
                     p.held = False

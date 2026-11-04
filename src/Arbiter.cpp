@@ -296,7 +296,7 @@ void Arbiter::release(Program &p) {
             m_subspace->request("TX.SET_ENABLED", {{"ENABLED", true}}, nullptr);
         m_ssHoldOwned = false;
     } else if (&p == &fldigi) {
-        m_fldigi->release();
+        m_fldigi->release(m_stopped);
     } else if (&p == &varac) {
         m_lever->release();
     }

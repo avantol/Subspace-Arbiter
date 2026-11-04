@@ -71,6 +71,7 @@ class FakeFldigi:
         self.flrig = flrig
         self.state = "RX"
         self.rx_only = False
+        self.refuse_rx_tx = 0   # answer this many rx_tx requests with a fault
         self.calls = []
         self.srv = _Rpc(self.port)
         self.srv.register_function(lambda: self.state, "main.get_trx_state")
@@ -87,6 +88,10 @@ class FakeFldigi:
         return ""
 
     def _rx_tx(self):
+        if self.refuse_rx_tx > 0:
+            self.refuse_rx_tx -= 1
+            self.calls.append(("rx_tx_refused", time.time()))
+            raise RuntimeError("rx_tx refused (bench)")
         self.calls.append(("rx_tx", time.time()))
         self.rx_only = False
         self._rx()

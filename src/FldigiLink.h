@@ -2,7 +2,9 @@
 // main.get_trx_state ("TX" covers TX and TUNE, else "RX"), main.rx_only,
 // main.rx_tx: stock fldigi since 2014. One request at a time on the link:
 // a hold or release asked for while the state query is in flight goes out
-// at the next tick instead of the query.
+// at the next tick instead of the query. An rx_tx fldigi did not accept is
+// sent again at every tick until it is; only the exit path, which cannot
+// wait for the next tick, sends on a client of its own.
 #include "XmlRpcClient.h"
 
 struct Settings;
@@ -18,10 +20,11 @@ public:
     QString state() const { return m_state; }   // "TX" / "RX" / "" (not answering)
     bool held() const { return m_held; }
     bool hold();      // only while fldigi is in RX: rx_only aborts an over in progress
-    bool release();   // rx_tx; also used on every exit path
+    bool release(bool closing = false);   // rx_tx; closing = the arbiter's exit path
 
 private:
-    void sendCmd(const QString &cmd);
+    bool sendCmd(const QString &cmd);
+    void rxTxResult(bool ok);
 
     XmlRpcClient m_link;
     Log &m_log;
@@ -29,4 +32,5 @@ private:
     int m_port, m_timeoutMs;
     QString m_state, m_pending;
     bool m_held = false;
+    bool m_releaseFailed = false;   // rx_tx not accepted: sent again at every tick until it is
 };
