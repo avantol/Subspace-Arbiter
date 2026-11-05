@@ -197,7 +197,7 @@ void Arbiter::tick() {
     if (!m_subspace->up() && !subspace.status.startsWith("refused"))
         subspace.status += "  (Subspace: Settings > Reporting: TCP API enabled, Accept TCP requests)";
     fldigi.status = m_fldigi->up() ? "connected"
-                                   : "not answering  (fldigi: Configure > Misc > XML-RPC server on, port 7362)";
+                                   : "not answering  (fldigi: Configure > Misc > TCP-IP sessions > XML: address 127.0.0.1, port 7362)";
     QString lever = m_lever->status();
     if (lever.startsWith("cluster lock: VarAC.db not found"))
         lever += "  (VarAC: Settings > Cluster enabled, PTT Lock ON, restart VarAC)";
@@ -217,7 +217,9 @@ QString Arbiter::setupText() {
         "  TCP max connections at least one more than you use now\n"
         "  (SpotterX takes one or two, CAT Watch one, the Arbiter one).\n\n"
         "fldigi\n"
-        "  Configure > Misc > XML-RPC: server on, port 7362 (the default).\n\n"
+        "  Nothing: its XML-RPC server is always on. To check it:\n"
+        "  Configure > Misc > TCP-IP sessions > XML: address 127.0.0.1,\n"
+        "  port 7362 (the defaults; Default, then Restart, puts them back).\n\n"
         "VarAC\n"
         "  Settings: \"Log VARA commands\" on.\n"
         "  Settings > Cluster: enabled, \"PTT Lock\" on. Restart VarAC.\n\n"

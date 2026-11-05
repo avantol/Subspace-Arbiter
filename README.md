@@ -27,7 +27,7 @@ refuses, ignores, or delays a PTT.
 - Linux (Debian, Ubuntu, Mint): `sudo apt install ./arbiter_<version>_amd64.deb`. "Arbiter" appears in the applications menu.
 - The Arbiter itself needs no settings. The other programs need these, once:
   - Subspace: Settings > Reporting: TCP API enabled, "Accept TCP requests" on, TCP max connections at least one more than you use now (SpotterX takes one or two). The Arbiter says so in its window if it is refused.
-  - fldigi: its XML-RPC server on (default port 7362; it is on by default).
+  - fldigi: nothing; its XML-RPC server is always on. To check it: Configure > Misc > TCP-IP sessions > XML, address 127.0.0.1, port 7362 (the defaults).
   - VarAC: Settings > "Log VARA commands" on; Settings > Cluster: enabled, "PTT Lock" on; then restart VarAC.
 - With CAT Watch in front of flrig (CAT Watch on 12345, flrig on 12346) nothing changes: the Arbiter talks to 12345 like every other program.
 
