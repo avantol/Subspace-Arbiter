@@ -34,6 +34,8 @@ public:
 private:
     static QString stamp();                    // VarAC's own shape: 2026-10-29 20:58:28.9007671Z
     bool write(const QString &what);
+    void backup();                 // [backup] a copy of VarAC.db before the first write
+    bool m_backedUp = false;
 
     Log &m_log;
     QString m_kind, m_db, m_status = "observe only";

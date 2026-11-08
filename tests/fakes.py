@@ -72,14 +72,22 @@ class FakeFldigi:
         self.state = "RX"
         self.rx_only = False
         self.refuse_rx_tx = 0   # answer this many rx_tx requests with a fault
+        self.fail_state = 0     # answer this many get_trx_state requests with a fault
         self.calls = []
         self.srv = _Rpc(self.port)
-        self.srv.register_function(lambda: self.state, "main.get_trx_state")
+        self.srv.register_function(self._get_trx_state, "main.get_trx_state")
         self.srv.register_function(self._rx_only, "main.rx_only")
         self.srv.register_function(self._rx_tx, "main.rx_tx")
         self.srv.register_function(self._tx, "main.tx")
         self.srv.register_function(self._rx, "main.rx")
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def _get_trx_state(self):
+        if self.fail_state > 0:
+            self.fail_state -= 1
+            self.calls.append(("state_failed", time.time()))
+            raise RuntimeError("get_trx_state failed (bench)")
+        return self.state
 
     def _rx_only(self):
         self.calls.append(("rx_only", time.time()))

@@ -2,9 +2,10 @@
 // main.get_trx_state ("TX" covers TX and TUNE, else "RX"), main.rx_only,
 // main.rx_tx: stock fldigi since 2014. One request at a time on the link:
 // a hold or release asked for while the state query is in flight goes out
-// at the next tick instead of the query. An rx_tx fldigi did not accept is
-// sent again at every tick until it is; only the exit path, which cannot
-// wait for the next tick, sends on a client of its own.
+// at the next tick instead of the query. From rx_only until fldigi accepts
+// an rx_tx a marker file stands (fail-open across a kill); while it stands
+// and fldigi is not to be held, rx_tx is sent again at every tick. Only the
+// exit path, which cannot wait for the next tick, sends on a client of its own.
 #include "XmlRpcClient.h"
 
 struct Settings;
@@ -25,6 +26,7 @@ public:
 private:
     bool sendCmd(const QString &cmd);
     void rxTxResult(bool ok);
+    void mark(bool on);             // [fail-open] the "rx_only sent, no rx_tx accepted since" marker
 
     XmlRpcClient m_link;
     Log &m_log;
@@ -32,5 +34,8 @@ private:
     int m_port, m_timeoutMs;
     QString m_state, m_pending;
     bool m_held = false;
-    bool m_releaseFailed = false;   // rx_tx not accepted: sent again at every tick until it is
+    bool m_releaseFailed = false;   // the last rx_tx was not accepted (logged once)
+    QString m_marker;               // [fail-open] beside the log file
+    bool m_marked = false;          // the marker stands
+    bool m_leftover = false;        // the marker was found at start-up
 };

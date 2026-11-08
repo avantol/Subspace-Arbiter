@@ -68,14 +68,16 @@ chosen. The ones that matter:
 
 - One poll (200 ms) of reaction time: a program that keys inside that window collides as it does today. No frame is ever lost to a refusal, because there is none.
 - Keying that bypasses flrig (VOX, a separate PTT line) is invisible.
-- If the Arbiter is killed outright (not closed) while holding fldigi, fldigi stays receive-only until fldigi is restarted. A normal close restores it. This is the one case that is not fail-open, until fldigi has a hold with its own expiry.
+- If the Arbiter is killed outright (not closed) while holding fldigi, fldigi stays receive-only until the Arbiter is started again (or fldigi is restarted): while fldigi is held, a file `fldigi_held.flag` lies beside the Arbiter's log, and an Arbiter that finds it at start-up puts fldigi back to transmit first ("fldigi: restored to transmit" in the log). A normal close restores fldigi at once. fldigi's receive-only switch has no expiry of its own, so an Arbiter that is never started again leaves fldigi receive-only.
 - VarAC's lock lives in its database; VarAC must have Cluster enabled with PTT Lock on, or there is nothing to hold. The command log must be on, or VarAC's links are invisible.
+- Before its first write to VarAC.db in a run, the Arbiter keeps a copy of it beside it, `VarAC.db.arbiter-backup` (made by SQLite, refreshed once a week). If VarAC ever reports its database damaged: close VarAC and the Arbiter, rename the damaged VarAC.db, rename the copy to VarAC.db, start VarAC.
+- The Arbiter asks flrig for PTT and fldigi for its state 5 times a second (poll_ms). On a station whose rig line is already busy, that is extra traffic; poll_ms can be raised in the ini at the cost of reaction time.
 - Do not stop and restart the Arbiter while it is holding: a stop releases everything.
 
 ## For developers
 
 - `src/` is the program (C++20, Qt 6: Core, Network, Sql, Widgets). `cmake -B build && cmake --build build`.
 - `arbiter.py` is the reference implementation the C++ was ported from, kept runnable.
-- `tests/scenarios.py` is the bench: fakes of flrig, fldigi, Subspace and VarAC's log and database, and the eight acceptance checks from the requirements. `python3 tests/scenarios.py` runs them against the Python version, `ARBITER_BIN=build/arbiter python3 tests/scenarios.py` against the binary. Both must pass.
+- `tests/scenarios.py` is the bench: fakes of flrig, fldigi, Subspace and VarAC's log and database, the eight acceptance checks from the requirements, and three more (refused fldigi release, an Arbiter killed while holding fldigi, a failed fldigi query during a hold). `python3 tests/scenarios.py` runs them against the Python version, `ARBITER_BIN=build/arbiter python3 tests/scenarios.py` against the binary. Both must pass.
 - `varac_probe.py` checks VarAC's cluster lock on a station in 30 s.
 - Packaging: `packaging/build-deb.sh <version>`; Windows: `installer/arbiter.iss` from `build/Arbiter/` (windeployqt output), as the workflows do.

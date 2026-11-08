@@ -32,7 +32,43 @@ QString VaracLever::stamp() {
     return QDateTime::currentDateTimeUtc().toString("yyyy-MM-dd HH:mm:ss.zzz") + "0000Z";
 }
 
+// [backup] Before the arbiter first writes to VarAC's own database in a run, a copy of it is
+// kept beside it (VarAC.db.arbiter-backup), made by SQLite itself (VACUUM INTO) so a write
+// VarAC makes meanwhile can't leave a half-copied file. Refreshed weekly (CHOSEN).
+void VaracLever::backup() {
+    if (m_backedUp) return;
+    m_backedUp = true;
+    const QString dst = m_db + ".arbiter-backup";
+    QFileInfo fi(dst);
+    if (fi.exists() && fi.lastModified().secsTo(QDateTime::currentDateTime()) < 7 * 86400) return;
+    const QString tmp = dst + ".tmp";
+    QFile::remove(tmp);
+    {
+        QSqlDatabase src = QSqlDatabase::addDatabase("QSQLITE", "varac-backup");
+        src.setDatabaseName(m_db);
+        src.setConnectOptions("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=2000");
+        bool ok = src.open();
+        if (ok) {
+            QSqlQuery q(src);
+            QString path = tmp;
+            path.replace("'", "''");
+            ok = q.exec("VACUUM INTO '" + path + "'");
+            if (!ok) m_log("VarAC: could not copy VarAC.db before writing (" + q.lastError().text().left(80) + "); writing anyway");
+        } else {
+            m_log("VarAC: could not copy VarAC.db before writing (" + src.lastError().text().left(80) + "); writing anyway");
+        }
+        src.close();
+        if (ok) {
+            QFile::remove(dst);
+            if (QFile::rename(tmp, dst))
+                m_log("VarAC: copy of VarAC.db kept as " + QFileInfo(dst).fileName() + " before the first write");
+        }
+    }
+    QSqlDatabase::removeDatabase("varac-backup");
+}
+
 bool VaracLever::write(const QString &what) {
+    if (what == "hold") backup();
     if (m_rw.databaseName() != m_db) { if (m_rw.isOpen()) m_rw.close(); m_rw.setDatabaseName(m_db); }
     if (!m_rw.isOpen() && !m_rw.open()) {
         m_log("VarAC: cluster lock " + what + " failed (" + m_rw.lastError().text().left(80) + ")");

@@ -173,6 +173,7 @@ class Log:
     """One line per state change: to the file, to the window, to the console."""
 
     def __init__(self, path, echo):
+        self.path = path
         self.lines = deque(maxlen=500)
         self.echo = echo
         self.lock = threading.Lock()
@@ -295,16 +296,42 @@ class FldigiLink:
                                s.getfloat("timing", "xmlrpc_timeout_s"), log)
         self.reconnect_s = s.getfloat("timing", "reconnect_s")
         self.state = None     # "TX" / "RX" / None
-        self.held = False     # we sent rx_only and have not sent rx_tx
-        self.release_failed = False   # rx_tx not accepted: sent again at every poll until it is
+        self.held = False     # fldigi is to be held (we sent rx_only and have not released)
+        self.release_failed = False   # the last rx_tx was not accepted (logged once)
+        # [fail-open] rx_only has no expiry in fldigi. The marker file beside the log says
+        # "rx_only sent, no rx_tx accepted since": written before rx_only goes out, removed
+        # only when fldigi accepts an rx_tx. One found at start-up means an arbiter was
+        # killed (or crashed) while holding: this one restores fldigi before anything else.
+        lp = getattr(log, "path", None)
+        self.marker = os.path.join(os.path.dirname(os.path.abspath(lp)), "fldigi_held.flag") if lp else None
+        self.marked = self.leftover = bool(self.marker and os.path.exists(self.marker))
+
+    def _mark(self, on):
+        if on == self.marked:
+            return
+        self.marked = on
+        if not self.marker:
+            return
+        try:
+            if on:
+                with open(self.marker, "w") as f:
+                    f.write("rx_only sent by the arbiter at %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+            else:
+                os.remove(self.marker)
+        except OSError:
+            pass
 
     def poll(self):
-        if self.release_failed and not self.held:
+        # rx_only went out and no rx_tx was accepted since, but fldigi is not to be held (a
+        # release fldigi refused, or a marker left by an arbiter that did not close): rx_tx
+        # again at every poll until fldigi takes it. Nothing else clears the marker, so a
+        # failed state query or an fldigi restart can't make the arbiter forget its hold.
+        if self.marked and not self.held:
             self._send_rx_tx(self.reconnect_s)
+            if self.marked:
+                return
         r = self.link.call("main.get_trx_state", reconnect_s=self.reconnect_s)
         self.state = None if r is None else str(r).upper()
-        if r is None and self.held:
-            self.held = False  # fldigi went away: nothing of ours survives its restart
 
     @property
     def transmitting(self):
@@ -314,8 +341,9 @@ class FldigiLink:
         """Only while fldigi is in RX: rx_only aborts an over in progress."""
         if self.state != "RX" or self.held:
             return False
+        self._mark(True)   # before rx_only goes out: a kill right after it still leaves the marker
         if self.link.call("main.rx_only", reconnect_s=self.reconnect_s) is None and not self.link.up:
-            return False
+            return False   # the marker stays: the next poll sends rx_tx in case fldigi took it
         self.held = True
         self.release_failed = False   # the next release sends its own rx_tx
         return True
@@ -325,17 +353,23 @@ class FldigiLink:
             return False
         self.held = False
         if not self._send_rx_tx(0.0) and closing:
-            self.log("fldigi: rx_tx not accepted (arbiter closing); fldigi may stay receive-only")
+            self.log("fldigi: rx_tx not accepted (arbiter closing); the next arbiter to start restores fldigi")
         return True
 
     def _send_rx_tx(self, reconnect_s):
         ok = self.link.call("main.rx_tx", reconnect_s=reconnect_s) is not None
-        if ok and self.release_failed:
+        if not ok:
+            if not self.release_failed:
+                self.log("fldigi: rx_tx not accepted; sent again until fldigi answers")
+            self.release_failed = True
+            return False
+        if self.leftover:
+            self.log("fldigi: restored to transmit (left receive-only by an arbiter that did not close)")
+        elif self.release_failed:
             self.log("fldigi: rx_tx accepted")
-        elif not ok and not self.release_failed:
-            self.log("fldigi: rx_tx not accepted; sent again until fldigi answers")
-        self.release_failed = not ok
-        return ok
+        self.leftover = self.release_failed = False
+        self._mark(False)
+        return True
 
 
 # ----------------------------------------------------------------------------
@@ -753,7 +787,34 @@ class VaracLever:
         t = time.time()
         return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(t)) + ".%07dZ" % int((t % 1) * 1e7)
 
+    BACKUP_MAX_AGE_S = 7 * 86400   # CHOSEN: a fresh copy each week the arbiter runs
+
+    def _backup(self):
+        """[backup] Before the arbiter first writes to VarAC's own database in a run, a copy of
+        it is kept beside it (VarAC.db.arbiter-backup), made with SQLite's backup API so a
+        write VarAC makes meanwhile can't leave a half-copied file. Refreshed weekly."""
+        if getattr(self, "_backed_up", False):
+            return
+        self._backed_up = True
+        dst = self.db + ".arbiter-backup"
+        try:
+            if os.path.exists(dst) and time.time() - os.path.getmtime(dst) < self.BACKUP_MAX_AGE_S:
+                return
+            src = sqlite3.connect("file:%s?mode=ro" % self.db, uri=True, timeout=2.0)
+            out = sqlite3.connect(dst + ".tmp")
+            try:
+                src.backup(out)
+            finally:
+                out.close()
+                src.close()
+            os.replace(dst + ".tmp", dst)
+            self.log("VarAC: copy of VarAC.db kept as %s before the first write" % os.path.basename(dst))
+        except Exception as e:
+            self.log("VarAC: could not copy VarAC.db before writing (%s); writing anyway" % str(e)[:80])
+
     def _write(self, what):
+        if what == "hold":
+            self._backup()
         try:
             con = sqlite3.connect(self.db, timeout=1.0)
             try:

@@ -335,6 +335,14 @@ def scenario_8():
         check(wait_for(lambda: b.held("VarAC"), 3.0), "VarAC held while fldigi transmits", fails)
         row = b.varalog.arbiter_row()
         check(row is not None and row[0] == 1, "Arbiter row present and busy", fails)
+        bk = b.varalog.db + ".arbiter-backup"
+        check(os.path.exists(bk), "a copy of VarAC.db was kept before the first write", fails)
+        if os.path.exists(bk):
+            import sqlite3 as _sq
+            c = _sq.connect(bk)
+            n = c.execute("SELECT COUNT(*) FROM instance WHERE name='Arbiter'").fetchone()[0]
+            c.close()
+            check(n == 0, "the copy is VarAC.db as it was before the arbiter's row", fails)
         ka = row[1] if row else None
         time.sleep(1.2)
         row2 = b.varalog.arbiter_row()
@@ -376,6 +384,70 @@ def scenario_9():
     return fails
 
 
+def scenario_10():
+    """[fail-open] Arbiter killed while holding fldigi, then started again with the channel clear:
+    the new arbiter restores fldigi (rx_tx) at once, and a clean close leaves no marker behind."""
+    b = Bench()
+    fails = []
+    marker = os.path.join(b.dir, "fldigi_held.flag")
+    try:
+        if BIN:
+            b.start()
+        else:
+            b.proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "arbiter.py"), "--console", "--ini", b.ini],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            wait_for(lambda: b.logged("Subspace: connected"), 6.0)
+        b.varalog.line("CONNECTED")
+        check(wait_for(lambda: b.fldigi.rx_only, 5.0), "fldigi held", fails)
+        check(os.path.exists(marker), "the hold left its marker", fails)
+        b.proc.kill()
+        b.proc.wait(5.0)
+        b.varalog.line("DISCONNECTED")
+        time.sleep(0.5)
+        check(b.fldigi.rx_only, "fldigi still rx_only after the kill", fails)
+        if BIN:
+            b.proc = subprocess.Popen([BIN, "--console", "--ini", b.ini], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            b.proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "arbiter.py"), "--console", "--ini", b.ini],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        check(wait_for(lambda: not b.fldigi.rx_only, 6.0), "the next arbiter restored fldigi", fails)
+        check(wait_for(lambda: b.logged("fldigi: restored to transmit"), 3.0), "the restore is logged", fails)
+        check(wait_for(lambda: not os.path.exists(marker), 3.0), "marker removed", fails)
+        b.varalog.line("CONNECTED")
+        check(wait_for(lambda: b.fldigi.rx_only and os.path.exists(marker), 5.0), "held again, marker written", fails)
+        b.proc.send_signal(signal.SIGTERM)
+        b.proc.wait(8.0)
+        check(wait_for(lambda: not b.fldigi.rx_only and not os.path.exists(marker), 3.0),
+              "clean close: released and no marker left", fails)
+    finally:
+        if b.proc and b.proc.poll() is None:
+            b.proc.kill()
+        b.varalog.line("DISCONNECTED")
+        b.proc = None
+        b.stop()
+    return fails
+
+
+def scenario_11():
+    """One failed fldigi state query during a hold does not forget the hold: the release still
+    sends rx_tx (1.0.2 cleared its own 'held' on any failed query, so fldigi stayed receive-only)."""
+    b = Bench()
+    fails = []
+    try:
+        b.start()
+        b.varalog.line("CONNECTED")
+        check(wait_for(lambda: b.held("fldigi") and b.fldigi.rx_only, 3.0), "fldigi held", fails)
+        b.fldigi.fail_state = 1
+        check(wait_for(lambda: b.fldigi.fail_state == 0, 3.0), "one state query failed during the hold", fails)
+        time.sleep(0.5)
+        b.varalog.line("DISCONNECTED")
+        check(wait_for(lambda: not b.held("fldigi"), 3.0), "the arbiter released fldigi", fails)
+        check(wait_for(lambda: not b.fldigi.rx_only, 3.0), "fldigi got rx_tx after the failed query", fails)
+    finally:
+        b.stop()
+    return fails
+
+
 SCENARIOS = {
     1: ("Replay of 27 Oct: auto-reply due during a VARA link", scenario_1),
     2: ("VARA keys while a Subspace message is in progress", scenario_2),
@@ -386,6 +458,8 @@ SCENARIOS = {
     7: ("Subspace 'Connections Full'", scenario_7),
     8: ("VarAC held through its cluster lock", scenario_8),
     9: ("fldigi release on the arbiter's own link; refused rx_tx sent again", scenario_9),
+    10: ("Arbiter killed while holding fldigi; the next one restores it", scenario_10),
+    11: ("A failed fldigi state query during a hold; the release still sends rx_tx", scenario_11),
 }
 
 
