@@ -54,7 +54,8 @@ public:
     Program subspace, fldigi, varac;
     QList<Program *> programs() { return {&subspace, &fldigi, &varac}; }
     bool setupComplete() const;        // all three programs reachable and VarAC's lock ready
-    static QString setupText();        // the one-time settings in the other programs, plain words
+    QString setupText() const;         // the one-time settings in the other programs, plain words,
+                                       // with this PC's settings files
     const QHash<QString, bool> &sources() const { return m_sources; }
     FlrigWatch &flrig() { return *m_flrig; }
     Log &log() { return m_log; }

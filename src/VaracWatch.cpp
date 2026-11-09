@@ -49,8 +49,8 @@ QStringList VaracWatch::winToHostPath(const QString &pIn) {
 #endif
 }
 
-QStringList VaracWatch::logFiles() {
-    QStringList files;
+QStringList VaracWatch::varacDirs() {
+    QStringList out;
     QStringList roots;
 #ifdef Q_OS_WIN
     roots << qEnvironmentVariable("SystemDrive", "C:") + "\\";
@@ -59,21 +59,42 @@ QStringList VaracWatch::logFiles() {
 #endif
     for (const QString &r : roots) {
         QDir root(r);
-        for (const QString &vd : root.entryList({"VarAC*"}, QDir::Dirs | QDir::NoDotAndDotDot)) {
-            QDir d(root.filePath(vd));
-            for (const QString &ini : d.entryList({"VarAC*.ini"}, QDir::Files)) {
-                QFile f(d.filePath(ini));
-                if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
-                QTextStream in(&f);
-                while (!in.atEnd()) {
-                    QString line = in.readLine();
-                    if (line.startsWith("LogVARACommandsPath="))
-                        files << winToHostPath(line.section('=', 1));
-                }
-            }
-            for (const QString &lg : d.entryList({"VarAC_vara_commands*.log"}, QDir::Files))
-                files << d.filePath(lg);
+        for (const QString &vd : root.entryList({"VarAC*"}, QDir::Dirs | QDir::NoDotAndDotDot))
+            out << root.filePath(vd);
+    }
+    return out;
+}
+
+QStringList VaracWatch::settingsFiles(const QString &extraDir) {
+    QStringList dirs = varacDirs();
+    if (!extraDir.isEmpty()) dirs << extraDir;
+    QStringList out;
+    for (const QString &vd : dirs) {
+        QDir d(vd);
+        for (const QString &ini : d.entryList({"VarAC.ini", "VarAC - *.ini"}, QDir::Files)) {
+            QString p = QFileInfo(d.filePath(ini)).absoluteFilePath();
+            if (!out.contains(p)) out << p;
         }
+    }
+    return out;
+}
+
+QStringList VaracWatch::logFiles() {
+    QStringList files;
+    for (const QString &vd : varacDirs()) {
+        QDir d(vd);
+        for (const QString &ini : d.entryList({"VarAC*.ini"}, QDir::Files)) {
+            QFile f(d.filePath(ini));
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+            QTextStream in(&f);
+            while (!in.atEnd()) {
+                QString line = in.readLine();
+                if (line.startsWith("LogVARACommandsPath="))
+                    files << winToHostPath(line.section('=', 1));
+            }
+        }
+        for (const QString &lg : d.entryList({"VarAC_vara_commands*.log"}, QDir::Files))
+            files << d.filePath(lg);
     }
     QStringList found;
     for (const QString &f : files)

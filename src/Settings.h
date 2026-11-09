@@ -39,6 +39,7 @@ struct Settings {
     QString logFile = "arbiter.log";
 
     QString iniPath;               // the file read, if any (for the log line)
+    QString iniLookedAt;           // where the file is looked for, there or not (Setup names it)
 
     // Reads the ini over the defaults. A missing file is fine.
     static Settings load(const QString &iniPath);

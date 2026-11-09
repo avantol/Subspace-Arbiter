@@ -27,6 +27,10 @@ public:
     void close() { m_timer.stop(); }
 
     static QStringList logFiles();            // oldest first, newest last
+    static QStringList varacDirs();           // each VarAC* folder at the drive root(s)
+    // VarAC.ini and "VarAC - <profile>.ini" in them, and in extraDir (the
+    // followed log's folder: VarAC installed elsewhere, log_path set)
+    static QStringList settingsFiles(const QString &extraDir = QString());
     static QStringList wineRoots();           // Linux: each prefix's drive_c
     static QStringList winToHostPath(const QString &p);
 

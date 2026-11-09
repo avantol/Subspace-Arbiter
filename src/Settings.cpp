@@ -13,6 +13,7 @@ static bool onOff(const QVariant &v, bool dflt) {
 
 Settings Settings::load(const QString &iniPath) {
     Settings s;
+    s.iniLookedAt = iniPath;
     if (iniPath.isEmpty() || !QFileInfo::exists(iniPath))
         return s;
     QSettings ini(iniPath, QSettings::IniFormat);

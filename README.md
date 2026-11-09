@@ -29,6 +29,7 @@ refuses, ignores, or delays a PTT.
   - Subspace: Settings > Reporting: TCP API enabled, "Accept TCP requests" on, TCP max connections at least one more than you use now (SpotterX takes one or two). The Arbiter says so in its window if it is refused.
   - fldigi: nothing; its XML-RPC server is always on. To check it: Configure > Misc > TCP-IP sessions > XML, address 127.0.0.1, port 7362 (the defaults).
   - VarAC: Settings > "Log VARA commands" on; Settings > Cluster: enabled, "PTT Lock" on; then restart VarAC.
+  - VarAC: in VarAC.ini (VarAC's folder, beside VarAC.exe; usually `C:\VarAC\VarAC.ini`), with VarAC closed, under `[RIG_CONTROL]` set `SafetyPTTOffEveryMinute=OFF`. VarAC has no screen for it (its release notes: "only available by manually editing the file"). ON, VarAC un-keys the radio once a minute, cutting off whichever program is transmitting (KR1FLE, 8 Nov: Subspace's first frame cut 0.6 s in).
 - With CAT Watch in front of flrig (CAT Watch on 12345, flrig on 12346) nothing changes: the Arbiter talks to 12345 like every other program.
 
 ## Run

@@ -117,7 +117,7 @@ void MainWindow::showSetup() {
     QString head = missing.isEmpty() ? "All three programs are connected."
                                      : "Not reachable yet: " + missing.join(", ") + ".";
     auto *box = new QMessageBox(QMessageBox::Information, "Arbiter setup", head, QMessageBox::Ok, this);
-    box->setInformativeText(Arbiter::setupText());
+    box->setInformativeText(m_arb.setupText());
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setModal(false);
     box->show();

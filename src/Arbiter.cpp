@@ -8,7 +8,9 @@
 #include "config.h"
 
 #include <QDateTime>
+#include <QDir>
 #include <QEventLoop>
+#include <QFileInfo>
 #include <QJsonObject>
 
 static double nowS() { return QDateTime::currentMSecsSinceEpoch() / 1000.0; }
@@ -209,7 +211,30 @@ bool Arbiter::setupComplete() const {
            m_lever->status() == "cluster lock ready";
 }
 
-QString Arbiter::setupText() {
+QString Arbiter::setupText() const {
+    // this PC's own files, named for the OS it runs on
+#ifdef Q_OS_WIN
+    const QString exe = "Arbiter.exe";
+    const QString varacUsual = "C:\\VarAC\\VarAC.ini";
+#else
+    const QString exe = "arbiter";
+    const QString varacUsual = "<Wine prefix>/drive_c/VarAC/VarAC.ini";
+#endif
+    QString varacFiles;
+    QString const logDir = m_varac->path().isEmpty() ? QString()
+                                                     : QFileInfo(m_varac->path()).absolutePath();
+    for (const QString &f : VaracWatch::settingsFiles(logDir))
+        varacFiles += "    " + QDir::toNativeSeparators(f) + "\n";
+    if (varacFiles.isEmpty())
+        varacFiles = "    none found; usually " + varacUsual + "\n"
+                     "    (VarAC's folder, beside VarAC.exe)\n";
+    QString const arbIni = QDir::toNativeSeparators(m_s.iniLookedAt);
+    QString const arbLines = QFileInfo::exists(m_s.iniLookedAt)
+        ? "    " + arbIni + "  (in use)\n"
+        : "    " + arbIni + "\n"
+          "    (not there; none is needed. To make one with every setting\n"
+          "    explained: " + exe + " --write-ini \"" + arbIni + "\")\n";
+
     return QStringLiteral(
         "The Arbiter itself needs no settings. The other programs need these, once:\n\n"
         "Subspace\n"
@@ -222,10 +247,21 @@ QString Arbiter::setupText() {
         "  port 7362 (the defaults; Default, then Restart, puts them back).\n\n"
         "VarAC\n"
         "  Settings: \"Log VARA commands\" on.\n"
-        "  Settings > Cluster: enabled, \"PTT Lock\" on. Restart VarAC.\n\n"
+        "  Settings > Cluster: enabled, \"PTT Lock\" on. Restart VarAC.\n"
+        "  In VarAC's settings file, with VarAC closed: under [RIG_CONTROL]\n"
+        "  set SafetyPTTOffEveryMinute=OFF (VarAC has no screen for it). ON,\n"
+        "  VarAC un-keys the radio once a minute, cutting off whichever\n"
+        "  program is transmitting. VarAC's settings files on this PC\n"
+        "  (one per profile; set it in the one you use):\n") + varacFiles +
+        QStringLiteral(
+        "\n"
         "flrig\n"
         "  Nothing. The Arbiter talks to port 12345 like every other program,\n"
         "  with or without CAT Watch in front of flrig.\n\n"
+        "Arbiter\n"
+        "  Nothing. Its settings file, only for exceptions:\n") + arbLines +
+        QStringLiteral(
+        "\n"
         "Then: Subspace shows \"TX disabled by ...\" while held, fldigi goes\n"
         "receive-only, VarAC shows \"PTT is disabled\". Close the Arbiter and\n"
         "every program works as before.");
