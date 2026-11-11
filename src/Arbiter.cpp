@@ -73,6 +73,12 @@ void Arbiter::subspaceEvents(double now) {
             else { m_ssPtt = false; m_ssLastOffT = now; }
         } else if (t == "TX.COMPLETE") {
             m_ssMsg = false;
+        } else if (t == "TX.PENDING") {
+            // a frame waits for its key-up, KEYUP_IN_MS from now (Subspace's clock is not
+            // ours, so it is relative); lapses subspace_frame_gap_s after it if no PTT came
+            m_ssPendingUntil = p.value("PENDING").toBool()
+                ? now + p.value("KEYUP_IN_MS").toDouble() / 1000.0 + m_s.subspaceFrameGapS
+                : 0;
         } else if (t == "TX.ENABLED") {
             bool en = p.value("ENABLED").toBool(true);
             m_ssTxEnabled = en ? 1 : 0;
@@ -95,6 +101,7 @@ void Arbiter::subspaceEvents(double now) {
         } else if (t == "STATION.CLOSING") {
             subspace.held = false;
             m_ssHoldOwned = false;
+            m_ssPendingUntil = 0;
             m_log("Subspace: closing");
         }
     }
@@ -128,6 +135,12 @@ void Arbiter::tick() {
     // still transmitting for subspace_frame_gap_s after the last PTT off: covers the gap between
     // frames and the 1.4 s between two queued messages (measured 2026-10-29)
     bool ssTx = m_ssPtt || m_ssMsg || m_ssBusy || now - m_ssLastOffT < m_s.subspaceFrameGapS;
+    // a frame waiting for its key-up (TX.PENDING) holds the others before Subspace keys
+    // (W8UFO 10 Nov: VarAC keyed 185 ms before Subspace's slot; VarAC takes ~1 s to obey
+    // its lock), but does not shield Subspace itself: a program already on the air (a VARA
+    // link that opens during the wait) still holds it, as before. A held Subspace sends
+    // nothing, so its waiting frame claims nothing.
+    bool ssPending = m_ssPendingUntil > 0 && now < m_ssPendingUntil && !subspace.held;
     bool flTx = m_fldigi->transmitting();
     if (flTx) m_flLastTxT = now;
     // VARA transmitting: PTT on now (a PTT ON without OFF counts for a minute), or a burst or
@@ -153,7 +166,7 @@ void Arbiter::tick() {
     m_sources[Reason::VARA] = va.link;
     m_sources[Reason::VARA_TX] = vaBurst && !va.link;
     m_sources[Reason::FLDIGI] = flTx;
-    m_sources[Reason::SUBSPACE] = ssTx;
+    m_sources[Reason::SUBSPACE] = ssTx || ssPending;
     m_sources[Reason::UNKNOWN] = unknown;
 
     subspace.connected = m_subspace->up();

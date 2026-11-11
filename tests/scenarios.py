@@ -448,6 +448,46 @@ def scenario_11():
     return fails
 
 
+def scenario_12():
+    """[txpending] A Subspace frame waiting for its key-up (TX.PENDING) holds VarAC and fldigi before
+    Subspace keys (W8UFO 10 Nov 19:48:44), never Subspace itself; it lapses after the key-up time
+    when no PTT comes; a VARA link that opens during the wait still holds Subspace."""
+    b = Bench()
+    fails = []
+    try:
+        b.start()
+        b.subspace.pending(2500)
+        check(wait_for(lambda: b.held("VarAC") and b.held("fldigi"), 1.5),
+              "VarAC and fldigi held while the frame waits", fails)
+        check(b.logged("VarAC: disabled (%s)" % A.R_SUBSPACE), "VarAC's hold reason is Subspace TX", fails)
+        check(not b.held("Subspace") and b.subspace.tx_enabled, "Subspace itself not held", fails)
+        th = threading.Thread(target=b.subspace.transmit, kwargs=dict(frames=1, frame_s=0.4))
+        th.start()
+        wait_for(lambda: b.subspace.transmitting, 2.0)
+        b.subspace.pending(None)                     # the station: keyed, so no longer waiting
+        th.join(5.0)
+        check(len(b.subspace.sent) == 1, "the frame went out", fails)
+        check(wait_for(lambda: not b.held("VarAC") and not b.held("fldigi"), 4.0),
+              "VarAC and fldigi released after the message", fails)
+
+        b.subspace.pending(500)                      # a frame that never keys (halted, no PENDING false)
+        check(wait_for(lambda: b.held("fldigi"), 1.5), "held again for the next waiting frame", fails)
+        check(wait_for(lambda: not b.held("fldigi") and not b.held("VarAC"), 4.0),
+              "the claim lapsed after its key-up time with no PTT", fails)
+
+        b.subspace.pending(4000)
+        check(wait_for(lambda: b.held("fldigi"), 1.5), "held for a third waiting frame", fails)
+        b.varalog.line("CONNECTED")
+        check(wait_for(lambda: b.held("Subspace"), 3.0), "a VARA link opening during the wait holds Subspace", fails)
+        check(b.logged("Subspace: disabled (%s)" % A.R_VARA), "Subspace's hold reason is the VARA link", fails)
+        b.varalog.line("DISCONNECTED")
+        check(wait_for(lambda: not b.held("Subspace") and not b.held("fldigi") and not b.held("VarAC"), 6.0),
+              "all released after DISCONNECTED", fails)
+    finally:
+        b.stop()
+    return fails
+
+
 SCENARIOS = {
     1: ("Replay of 27 Oct: auto-reply due during a VARA link", scenario_1),
     2: ("VARA keys while a Subspace message is in progress", scenario_2),
@@ -460,6 +500,7 @@ SCENARIOS = {
     9: ("fldigi release on the arbiter's own link; refused rx_tx sent again", scenario_9),
     10: ("Arbiter killed while holding fldigi; the next one restores it", scenario_10),
     11: ("A failed fldigi state query during a hold; the release still sends rx_tx", scenario_11),
+    12: ("A waiting Subspace frame holds the others before the key-up", scenario_12),
 }
 
 

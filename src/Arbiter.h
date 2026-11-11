@@ -84,6 +84,8 @@ private:
     // Subspace message tracking (nothing pushed spans the gap between frames)
     bool m_ssPtt = false, m_ssMsg = false, m_ssBusy = false, m_ssHoldOwned = false;
     double m_ssLastOffT = 0, m_ssBusyPolledT = 0, m_ssDialT = 0;
+    // TX.PENDING: a Subspace frame waits for its key-up, until this time (0 = none)
+    double m_ssPendingUntil = 0;
     int m_ssTxEnabled = -1;
     double m_flLastTxT = 0;
     double m_unknownKeyedUntil = 0;

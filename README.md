@@ -18,8 +18,9 @@ refuses, ignores, or delays a PTT.
 5. VarAC: held through VarAC's own cluster PTT lock. The Arbiter appears in VarAC.db as a second cluster instance named "Arbiter"; while that row says busy, VarAC shows "PTT is disabled" and will not key (about 1 s after the hold). VarAC drops a lock whose keepalive is 30 s old, so a dead Arbiter frees VarAC in half a minute.
 6. When the radio is clear and no link is open, everything is released.
 7. The operator always wins: re-enable TX in Subspace and the Arbiter leaves Subspace alone until the radio is next clear. The window has a Release button per program for the same purpose, and an "Enable Arb" box per program to take it out of arbitration.
-8. The dial is never touched, only logged.
-9. Nothing is changed in flrig, fldigi, Subspace or VarAC settings. Stop the Arbiter and every program works as before.
+8. Subspace (Build 523 and later) tells the Arbiter as soon as a frame is waiting for its slot, up to one slot before it keys. The Arbiter then holds VarAC and fldigi before Subspace keys, so VarAC (about 1 s to obey) is already held when the slot comes. A waiting frame never protects Subspace itself: a VARA link already on the air still holds it. Older Subspace builds send no such notice; the Arbiter then learns of a send when Subspace keys.
+9. The dial is never touched, only logged.
+10. Nothing is changed in flrig, fldigi, Subspace or VarAC settings. Stop the Arbiter and every program works as before.
 
 ## Install
 
@@ -73,7 +74,7 @@ chosen. The ones that matter:
 
 ## Known limits
 
-- One poll (200 ms) of reaction time: a program that keys inside that window collides as it does today. No frame is ever lost to a refusal, because there is none.
+- One poll (200 ms) of reaction time: a program that keys inside that window collides as it does today (W8UFO, 10 Nov 19:48:44: VarAC keyed 185 ms before Subspace's slot). A Subspace frame announced ahead (Build 523 and later) closes that window for Subspace's slotted sends, as far as VarAC obeys in time; a VARA frame, an fldigi over or an un-slotted Subspace send gives no warning. No frame is ever lost to a refusal, because there is none.
 - Keying that bypasses flrig (VOX, a separate PTT line) is invisible.
 - If the Arbiter is killed outright (not closed) while holding fldigi, fldigi stays receive-only until the Arbiter is started again (or fldigi is restarted): while fldigi is held, a file `fldigi_held.flag` lies beside the Arbiter's log, and an Arbiter that finds it at start-up puts fldigi back to transmit first ("fldigi: restored to transmit" in the log). A normal close restores fldigi at once. fldigi's receive-only switch has no expiry of its own, so an Arbiter that is never started again leaves fldigi receive-only.
 - VarAC's lock lives in its database; VarAC must have Cluster enabled with PTT Lock on, or there is nothing to hold. The command log must be on, or VarAC's links are invisible.
@@ -85,6 +86,6 @@ chosen. The ones that matter:
 
 - `src/` is the program (C++20, Qt 6: Core, Network, Sql, Widgets). `cmake -B build && cmake --build build`.
 - `arbiter.py` is the reference implementation the C++ was ported from, kept runnable.
-- `tests/scenarios.py` is the bench: fakes of flrig, fldigi, Subspace and VarAC's log and database, the eight acceptance checks from the requirements, and three more (refused fldigi release, an Arbiter killed while holding fldigi, a failed fldigi query during a hold). `python3 tests/scenarios.py` runs them against the Python version, `ARBITER_BIN=build/arbiter python3 tests/scenarios.py` against the binary. Both must pass.
+- `tests/scenarios.py` is the bench: fakes of flrig, fldigi, Subspace and VarAC's log and database, the eight acceptance checks from the requirements, and four more (refused fldigi release, an Arbiter killed while holding fldigi, a failed fldigi query during a hold, a waiting Subspace frame). `python3 tests/scenarios.py` runs them against the Python version, `ARBITER_BIN=build/arbiter python3 tests/scenarios.py` against the binary. Both must pass.
 - `varac_probe.py` checks VarAC's cluster lock on a station in 30 s.
 - Packaging: `packaging/build-deb.sh <version>`; Windows: `installer/arbiter.iss` from `build/Arbiter/` (windeployqt output), as the workflows do.

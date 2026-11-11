@@ -377,7 +377,7 @@ class FldigiLink:
 # ----------------------------------------------------------------------------
 
 class SubspaceLink:
-    """Events RIG.PTT / TX.COMPLETE / TX.ENABLED / STATION.CLOSING, queries with
+    """Events RIG.PTT / TX.COMPLETE / TX.PENDING / TX.ENABLED / STATION.CLOSING, queries with
     _ID correlation, EVENTS.KEEPALIVE heartbeat, reconnect on loss."""
 
     KEEPALIVE_S = 10.0   # chosen
@@ -923,6 +923,7 @@ class Arbiter:
         self.ss_last_off_t = 0.0
         self.ss_busy = False          # STATION.GET_BUSY: arq_tx / arq_negotiating / transmitting
         self.ss_busy_polled_t = 0.0
+        self.ss_pending_until = 0.0   # TX.PENDING: a frame waits for its key-up, until then (0 = none)
         self.ss_hold_owned = False    # our TX.SET_ENABLED false changed the button (else it was off already)
         self.ss_tx_enabled = None
         self.ss_dial_t = 0.0
@@ -950,6 +951,13 @@ class Arbiter:
                     self.ss_ptt, self.ss_last_off_t = False, now
             elif t == "TX.COMPLETE":
                 self.ss_msg = False
+            elif t == "TX.PENDING":
+                # a frame waits for its key-up, KEYUP_IN_MS from now (Subspace's clock is not
+                # ours, so it is relative); lapses subspace_frame_gap_s after it if no PTT came
+                if p.get("PENDING"):
+                    self.ss_pending_until = now + float(p.get("KEYUP_IN_MS", 0)) / 1000.0 + self.frame_gap_s
+                else:
+                    self.ss_pending_until = 0.0
             elif t == "TX.ENABLED":
                 en = bool(p.get("ENABLED", True))
                 self.ss_tx_enabled = en
@@ -972,6 +980,7 @@ class Arbiter:
             elif t == "STATION.CLOSING":
                 self.ss.held = False
                 self.ss_hold_owned = False
+                self.ss_pending_until = 0.0
                 self.log("Subspace: closing")
 
     def _subspace_state_poll(self, now):
@@ -1003,6 +1012,12 @@ class Arbiter:
         # still transmitting for subspace_frame_gap_s after the last PTT off: covers the gap
         # between frames and the 1.4 s between two queued messages (measured 2026-10-29)
         ss_tx = self.ss_ptt or self.ss_msg or self.ss_busy or now - self.ss_last_off_t < self.frame_gap_s
+        # a frame waiting for its key-up (TX.PENDING) holds the others before Subspace keys
+        # (W8UFO 10 Nov: VarAC keyed 185 ms before Subspace's slot; VarAC takes ~1 s to obey
+        # its lock), but does not shield Subspace itself: a program already on the air (a VARA
+        # link that opens during the wait) still holds it, as before. A held Subspace sends
+        # nothing, so its waiting frame claims nothing.
+        ss_pending = 0.0 < self.ss_pending_until and now < self.ss_pending_until and not self.ss.held
         fl_tx = self.fldigi.transmitting
         if fl_tx:
             self.fl_last_tx_t = now
@@ -1027,7 +1042,7 @@ class Arbiter:
         unknown = self.unknown_keyed_until > 0.0
 
         sources = {R_VARA: vara_link, R_VARA_TX: va_burst and not vara_link,
-                   R_FLDIGI: fl_tx, R_SUBSPACE: ss_tx, R_UNKNOWN: unknown}
+                   R_FLDIGI: fl_tx, R_SUBSPACE: ss_tx or ss_pending, R_UNKNOWN: unknown}
         own = {self.ss: {R_SUBSPACE}, self.fl: {R_FLDIGI}, self.va: {R_VARA, R_VARA_TX}}
         with self.lock:
             self.sources = sources

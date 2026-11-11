@@ -3,7 +3,8 @@
 FakeFlrig     XML-RPC: rig.get_ptt, rig.get_vfo, rig.set_ptt, rig.set_vfo, main.get_version
 FakeFldigi    XML-RPC: main.get_trx_state, main.rx_only, main.rx_tx, main.tx, main.rx
 FakeSubspace  JSON lines on TCP: STATION.GET_BUSY, TX.GET_ENABLED, TX.SET_ENABLED (with a
-              lease), EVENTS.KEEPALIVE; pushes RIG.PTT / TX.COMPLETE / TX.ENABLED;
+              lease), EVENTS.KEEPALIVE; pushes RIG.PTT / TX.COMPLETE / TX.ENABLED, and
+              TX.PENDING through pending();
               transmit(frames) drives flrig's PTT the way Subspace does; auto_reply_due()
               is refused while TX is off, exactly as the station refuses a send.
 VaracLog      writes VarAC's command-log lines ("27/10/2026 12:47:24 - PTT ON").
@@ -279,6 +280,14 @@ class FakeSubspace:
         self.transmitting = False
         self.sent.append(text)
         return True
+
+    def pending(self, keyup_in_ms=None):
+        """A slotted frame waits for its key-up (keyup_in_ms from now), or stops waiting (None).
+        Never while TX is off, as the station."""
+        if keyup_in_ms is None:
+            self.push("TX.PENDING", PENDING=False)
+        elif self.tx_enabled:
+            self.push("TX.PENDING", PENDING=True, KEYUP_IN_MS=int(keyup_in_ms))
 
     def auto_reply_due(self):
         return self.transmit(frames=1, frame_s=0.4, text="auto-reply")
