@@ -13,6 +13,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLockFile>
+#include <QMessageBox>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <cstdio>
@@ -77,7 +79,30 @@ int main(int argc, char *argv[]) {
         logPath = base + "/" + logPath;
     }
     bool window = !cli.isSet(consoleOpt);
+
+    // one Arbiter per PC (per --ini on the bench): two would release each
+    // other's holds. Checked before the log is opened or anything is sent.
+    // Stale time 0: a live copy's lock is never taken over by age; a crashed
+    // copy's lock is (its process is gone).
+    QString lockDir = QFileInfo(logPath).absolutePath();
+    QDir().mkpath(lockDir);
+    QLockFile lock(lockDir + "/arbiter.lock");
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0) && lock.error() == QLockFile::LockFailedError) {
+        qint64 pid = 0;
+        QString host, appName;
+        lock.getLockInfo(&pid, &host, &appName);
+        QString msg = pid > 0 ? QString("Arbiter is already running (pid %1). This copy will close.").arg(pid)
+                              : QString("Arbiter is already running. This copy will close.");
+        std::fprintf(stderr, "%s\n", qPrintable(msg));
+        if (window) QMessageBox::information(nullptr, "Arbiter", msg);
+        return 2;
+    }
+
     Log log(logPath, !window);
+    if (!lock.isLocked())
+        log(QString("arbiter: cannot create %1 (error %2): a second copy would not be stopped")
+                .arg(QDir::toNativeSeparators(lockDir + "/arbiter.lock")).arg(int(lock.error())));
     Arbiter arb(s, log);
 
     // every exit path releases every hold

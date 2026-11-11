@@ -40,6 +40,12 @@ renew, an Enable box and a Release button; below, flrig's PTT and dial
 and the transcript. Close the window to stop; every hold is released on
 the way out.
 
+One Arbiter per PC: a second copy started while one runs (from the menu
+and from a start script, say) says "Arbiter is already running (pid N)"
+and closes without touching anything. Two copies would release each
+other's holds. The lock is `arbiter.lock` beside the log; a crashed
+copy's lock is taken over at the next start.
+
 Command line: `arbiter --console` (no window, log to the console),
 `arbiter --ini <file>` (settings from that file), `arbiter --write-ini
 <file>` (writes the documented defaults to edit from).
