@@ -45,6 +45,9 @@ Settings Settings::load(const QString &iniPath) {
     s.varacLever = str("varac/lever", s.varacLever).toLower();
     s.varacDbPath = str("varac/db_path", s.varacDbPath);
     s.varacRenewS = num("varac/varac_renew_s", s.varacRenewS);
+    s.unkeyBlockLabel = str("varac/unkey_block_label", s.unkeyBlockLabel);
+    s.unkeyBlockMs = int(num("varac/unkey_block_ms", s.unkeyBlockMs));
+    s.unkeyBlockRenewS = num("varac/unkey_block_renew_s", s.unkeyBlockRenewS);
     s.logFile = str("log/file", s.logFile);
     if (s.pollMs < 50) s.pollMs = 50;
     return s;
@@ -113,6 +116,16 @@ QString Settings::defaultIniText() {
         "# varac_renew_s: how often the Arbiter row's keepalive is refreshed. measured:\n"
         "# VarAC drops a lock whose keepalive is about 30 s old.\n"
         "varac_renew_s = 10\n"
+        "# unkey_block_label: the label (HTTP User-Agent) on VarAC's requests to flrig.\n"
+        "# measured 2026-11-12 on WM8Q's VarAC: XML-RPC.NET on every request. A held VarAC\n"
+        "# still sends VARA's PTT OFF (bench 2026-11-11), so while VarAC is held the arbiter\n"
+        "# tells flrig-subspace 8 to ignore un-keys with this label. Blank = never ask.\n"
+        "unkey_block_label = XML-RPC.NET\n"
+        "# unkey_block_ms: how long one such instruction lasts. chosen: flrig-subspace's cap;\n"
+        "# a stopped arbiter's instruction lapses within it.\n"
+        "unkey_block_ms = 15000\n"
+        "# unkey_block_renew_s: how often it is renewed while VarAC is held. chosen.\n"
+        "unkey_block_renew_s = 5\n"
         "\n[log]\n"
         "# file: relative to this ini's folder (or to the data folder without an ini).\n"
         "file = arbiter.log\n");

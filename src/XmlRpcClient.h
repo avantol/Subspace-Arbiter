@@ -22,13 +22,16 @@ public:
 
     // Returns false when nothing was sent: a call is in flight, or the program
     // failed less than reconnectS ago. The callback is then not invoked.
-    bool call(const QString &method, const QVariantList &args, Reply cb);
+    // faultIsAnswer: a <fault> reply means the program is up and refused the
+    // method (a command an older version lacks), not that it stopped answering;
+    // the callback then gets ok = false and the value "fault: <text>".
+    bool call(const QString &method, const QVariantList &args, Reply cb, bool faultIsAnswer = false);
     bool up() const { return m_up; }
     bool busy() const { return m_inflight != nullptr; }
     QString name() const { return m_name; }
 
 private:
-    void finished(QNetworkReply *r, Reply cb);
+    void finished(QNetworkReply *r, Reply cb, bool faultIsAnswer);
     static QByteArray build(const QString &method, const QVariantList &args);
     static bool parse(const QByteArray &xml, QVariant &value, QString &fault);
 

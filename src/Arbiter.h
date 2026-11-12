@@ -1,7 +1,9 @@
 #pragma once
 // The arbiter: one tick, one hold table. Whatever is already transmitting
 // finishes; the arbiter holds only what has not started, by throwing each
-// program's own switch, and never refuses, swallows or delays a PTT.
+// program's own switch. Where a switch holds a program only in part (VarAC's
+// lock stops VARA's keys, not its un-keys), flrig-subspace carries out the
+// rest on the arbiter's renewed instruction. It never refuses or delays a key.
 #include "Settings.h"
 
 #include <QHash>

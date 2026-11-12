@@ -1,6 +1,9 @@
 """Bench fakes for the arbiter: no radio, no real program.
 
-FakeFlrig     XML-RPC: rig.get_ptt, rig.get_vfo, rig.set_ptt, rig.set_vfo, main.get_version
+FakeFlrig     XML-RPC: rig.get_ptt, rig.get_vfo, rig.set_ptt, rig.set_vfo, main.get_version,
+              rig.block_unkey (flrig-subspace 8; has_block=False = stock flrig): a PTT
+              OFF carrying the blocked label (HTTP User-Agent) is ignored unless that
+              label made the current key; labelled_set_ptt() sends one as VarAC would
 FakeFldigi    XML-RPC: main.get_trx_state, main.rx_only, main.rx_tx, main.tx, main.rx
 FakeSubspace  JSON lines on TCP: STATION.GET_BUSY, TX.GET_ENABLED, TX.SET_ENABLED (with a
               lease), EVENTS.KEEPALIVE; pushes RIG.PTT / TX.COMPLETE / TX.ENABLED, and
@@ -19,7 +22,7 @@ import socketserver
 import sqlite3
 import threading
 import time
-from xmlrpc.server import SimpleXMLRPCServer
+from xmlrpc.server import SimpleXMLRPCRequestHandler, SimpleXMLRPCServer
 
 
 def free_port():
@@ -37,24 +40,75 @@ class _Rpc(SimpleXMLRPCServer):
         super().__init__(("127.0.0.1", port), logRequests=False, allow_none=True)
 
 
+class _LabelHandler(SimpleXMLRPCRequestHandler):
+    """Keeps the request's HTTP User-Agent on the server while the method runs."""
+
+    def do_POST(self):
+        self.server.current_ua = self.headers.get("User-Agent", "")
+        super().do_POST()
+
+
 class FakeFlrig:
-    def __init__(self):
+    """flrig-subspace 8 as far as the arbiter sees it; has_block=False = stock flrig
+    (no rig.block_unkey: a fault)."""
+
+    def __init__(self, has_block=True):
         self.port = free_port()
         self.ptt = 0
         self.vfo = 7115000
         self.calls = []
-        self.srv = _Rpc(self.port)
+        self.block_label = ""
+        self.block_until = 0.0
+        self.key_owner = ""
+        self.srv = SimpleXMLRPCServer(("127.0.0.1", self.port), requestHandler=_LabelHandler,
+                                      logRequests=False, allow_none=True)
+        self.srv.current_ua = ""
         self.srv.register_function(lambda: int(self.ptt), "rig.get_ptt")
         self.srv.register_function(lambda: str(self.vfo), "rig.get_vfo")
         self.srv.register_function(self._set_ptt, "rig.set_ptt")
         self.srv.register_function(self._set_vfo, "rig.set_vfo")
         self.srv.register_function(lambda: "fake 1.0", "main.get_version")
+        if has_block:
+            self.srv.register_function(self._block_unkey, "rig.block_unkey")
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 
-    def _set_ptt(self, v):
-        self.calls.append(("set_ptt", int(v), time.time()))
+    def _block_unkey(self, label, ms):
+        ms = int(ms)
+        self.calls.append(("block_unkey", (label, ms), time.time()))
+        if ms <= 0 or not label:
+            self.block_label, self.block_until = "", 0.0
+            return 0
+        ms = min(ms, 15000)
+        self.block_label, self.block_until = label, time.time() + ms / 1000.0
+        return ms
+
+    def blocking(self):
+        return bool(self.block_label) and time.time() < self.block_until
+
+    def key(self, v, owner):
+        """A fake program keys or un-keys the radio directly (its own key, carried out)."""
         self.ptt = int(v)
+        self.key_owner = owner if v else ""
+
+    def _set_ptt(self, v):
+        v = int(v)
+        ua = self.srv.current_ua
+        if (not v and self.blocking() and ua == self.block_label
+                and self.key_owner and self.key_owner != ua):
+            self.calls.append(("set_ptt_ignored", v, time.time()))
+            return 0
+        self.calls.append(("set_ptt", v, time.time()))
+        self.ptt = v
+        self.key_owner = (ua or "(no label)") if v else ""
         return 0
+
+    def labelled_set_ptt(self, v, label):
+        """A program with this HTTP label sends set_ptt (VarAC: "XML-RPC.NET")."""
+        import xmlrpc.client as _xc
+
+        class _T(_xc.Transport):
+            user_agent = label
+        _xc.ServerProxy("http://127.0.0.1:%d" % self.port, transport=_T()).rig.set_ptt(int(v))
 
     def _set_vfo(self, v):
         self.calls.append(("set_vfo", int(v), time.time()))
@@ -113,13 +167,13 @@ class FakeFldigi:
             return ""
         self.state = "TX"
         if self.flrig:
-            self.flrig.ptt = 1
+            self.flrig.key(1, "fldigi")
         return ""
 
     def _rx(self):
         self.state = "RX"
         if self.flrig:
-            self.flrig.ptt = 0
+            self.flrig.key(0, "fldigi")
         return ""
 
     def close(self):
@@ -241,7 +295,7 @@ class FakeSubspace:
         if not on and self.transmitting:
             self.transmitting = False       # the full halt cuts the message
             if self.flrig:
-                self.flrig.ptt = 0
+                self.flrig.key(0, "Hamlib")
         self.push("TX.ENABLED", ENABLED=on, REMOTE=self.remote, REASON=self.reason,
                   OVERRIDE=override, EXPIRED=expired)
 
@@ -267,13 +321,13 @@ class FakeSubspace:
             if not self.transmitting:
                 return False
             if self.flrig:
-                self.flrig.ptt = 1
+                self.flrig.key(1, "Hamlib")
             self.push("RIG.PTT", "on", PTT=True, UTC=int(time.time() * 1000))
             time.sleep(frame_s)
             if i == frames - 1:
                 self.push("TX.COMPLETE", text, SUBMODE=0, UTC=int(time.time() * 1000))
             if self.flrig:
-                self.flrig.ptt = 0
+                self.flrig.key(0, "Hamlib")
             self.push("RIG.PTT", "off", PTT=False, UTC=int(time.time() * 1000))
             if i < frames - 1:
                 time.sleep(gap_s)

@@ -52,9 +52,16 @@ void Arbiter::stop() {
     m_tick.stop();
     releaseAll();
     m_lever->remove();
+    m_flrig->setUnkeyBlock(false);
     // the releases are network sends: let them go out before the sockets close
-    // (kExitFlushMs = 600, chosen: fldigi and Subspace answer in well under that)
+    // (kExitFlushMs = 600, chosen: fldigi and Subspace answer in well under that).
+    // The un-key block's end is sent as soon as flrig's link is free; unsent, the
+    // block lapses by itself within unkey_block_ms.
     QEventLoop flush;
+    QTimer pump;
+    connect(&pump, &QTimer::timeout, this, [this]() { m_flrig->sendBlockIfDue(); });
+    pump.start(50);
+    m_flrig->sendBlockIfDue();
     QTimer::singleShot(600, &flush, &QEventLoop::quit);
     flush.exec();
     m_subspace->close();
@@ -144,8 +151,13 @@ void Arbiter::tick() {
     bool flTx = m_fldigi->transmitting();
     if (flTx) m_flLastTxT = now;
     // VARA transmitting: PTT on now (a PTT ON without OFF counts for a minute), or a burst or
-    // connect request within vara_burst_hold_s, so the gaps between bursts keep the hold
-    bool vaBurst = (va.ptt && now - va.pttT < 60) || (now - va.burstT < m_s.varaBurstHoldS);
+    // connect request within vara_burst_hold_s, so the gaps between bursts keep the hold.
+    // [unkey-block] Not while VarAC is held: a held VarAC puts nothing on the air (VarAC:
+    // "Ignoring PTT request by the modem"). Counted, VARA's refused attempts held the others
+    // for nothing and made VarAC "transmitting", so its hold was neither renewed nor released
+    // until VarAC's own 30 s timeout (W8UFO 10 Nov 19:48:45 to 19:49:15).
+    bool vaBurst = !varac.held &&
+                   ((va.ptt && now - va.pttT < 60) || (now - va.burstT < m_s.varaBurstHoldS));
     bool vaTx = va.link || vaBurst;
     bool keyed = m_flrig->ptt == 1;
     // who owns the keyed radio: a program transmitting now, or one that stopped within
@@ -197,6 +209,9 @@ void Arbiter::tick() {
         bool want = !others.isEmpty() && !p->transmitting && !p->overridden && p->enabled;
         apply(*p, want, others.isEmpty() ? QString() : others.first(), now);
     }
+    // [unkey-block] VarAC's lock holds its keys but not VARA's un-keys: while VarAC is held,
+    // flrig-subspace ignores un-keys with VarAC's label (renewed; it lapses by itself)
+    m_flrig->setUnkeyBlock(varac.held);
 
     // the dial is never arbitrated, only logged, once per change
     if (m_flrig->vfo >= 0 && m_flrig->vfo != m_loggedVfo) {
@@ -217,6 +232,8 @@ void Arbiter::tick() {
     if (lever.startsWith("cluster lock: VarAC.db not found"))
         lever += "  (VarAC: Settings > Cluster enabled, PTT Lock ON, restart VarAC)";
     varac.status = m_varac->status() + "; " + lever;
+    if (varac.held && m_flrig->blockStanding()) varac.status += "; un-keys blocked at flrig";
+    else if (m_flrig->blockSupport() == 0) varac.status += "; un-key block not available with this flrig";
 }
 
 bool Arbiter::setupComplete() const {
@@ -297,7 +314,9 @@ void Arbiter::apply(Program &p, bool want, const QString &reason, double now) {
             p.renewedT = now;
         }
     } else if (!want && p.held) {
-        if (p.transmitting) return;   // never touch a program while it transmits
+        // never touch a program while it transmits; a held VarAC puts nothing on the air,
+        // so releasing it touches nothing
+        if (p.transmitting && &p != &varac) return;
         release(p);
         p.held = false;
         m_log(p.name + ": released (" + p.reason + " over)");

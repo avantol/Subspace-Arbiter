@@ -129,6 +129,16 @@ db_path =
 # about 30 s old (PTT re-enabled 32 s after the last refresh), so a dead
 # arbiter frees VarAC in half a minute; 10 s keeps a live hold well inside.
 varac_renew_s = 10
+# unkey_block_label: the label (HTTP User-Agent) on VarAC's requests to flrig.
+# measured 2026-11-12 on WM8Q's VarAC: XML-RPC.NET on every request. A held VarAC
+# still sends VARA's PTT OFF (bench 2026-11-11), so while VarAC is held the arbiter
+# tells flrig-subspace 8 to ignore un-keys with this label. Blank = never ask.
+unkey_block_label = XML-RPC.NET
+# unkey_block_ms: how long one such instruction lasts. chosen: flrig-subspace's cap;
+# a stopped arbiter's instruction lapses within it.
+unkey_block_ms = 15000
+# unkey_block_renew_s: how often it is renewed while VarAC is held. chosen.
+unkey_block_renew_s = 5
 
 [log]
 file = arbiter.log
@@ -249,9 +259,12 @@ class XmlRpcLink:
 
 
 class FlrigWatch:
-    """Reads PTT and the dial from flrig's cache. Never sends set_ptt."""
+    """Reads PTT and the dial from flrig's cache. Never sends set_ptt. While the arbiter
+    holds VarAC it also keeps flrig-subspace's un-key block standing (rig.block_unkey):
+    VarAC's lock holds its keys, not VARA's un-keys."""
 
     def __init__(self, s, log):
+        self.log = log
         self.link = XmlRpcLink("flrig", s.get("ports", "flrig_host"), s.getint("ports", "flrig_port"),
                                s.getfloat("timing", "xmlrpc_timeout_s"), log)
         self.reconnect_s = s.getfloat("timing", "reconnect_s")
@@ -261,8 +274,53 @@ class FlrigWatch:
         self.vfo_changed_t = 0.0
         self.vfo_polled_t = 0.0
         self.VFO_POLL_S = 1.0  # chosen: the dial is only logged; PTT is what every tick needs
+        self.block_label = s.get("varac", "unkey_block_label").strip()
+        self.block_ms = s.getint("varac", "unkey_block_ms")
+        self.block_renew_s = s.getfloat("varac", "unkey_block_renew_s")
+        self.block_want = False
+        self.block_sent = False       # the last instruction that reached flrig was "block"
+        self.block_sent_t = 0.0
+        self.block_support = None     # None unknown, False not in this flrig, True yes
+
+    def send_block_if_due(self):
+        """[unkey-block] One instruction per call: start or renew the block while the arbiter
+        holds VarAC, end it once when the hold ends. A flrig without the command answers with
+        a fault: said once, then not asked again until flrig reconnects."""
+        if not self.block_label or self.block_support is False or not self.link.up:
+            return False
+        now = time.time()
+        due = (not self.block_sent or now - self.block_sent_t >= self.block_renew_s) if self.block_want \
+            else self.block_sent
+        if not due:
+            return False
+        want = self.block_want
+        p = self.link._get(self.reconnect_s)
+        if p is None:
+            return False
+        self.block_sent_t = now
+        try:
+            getattr(p, "rig.block_unkey")(self.block_label, self.block_ms if want else 0)
+        except xmlrpc.client.Fault:
+            self.block_support = False
+            self.block_sent = False
+            self.log("flrig: this flrig has no un-key block (stock, or flrig-subspace before 8): "
+                     "a held VarAC's un-keys still reach the radio")
+            return True
+        except (OSError, xmlrpc.client.ProtocolError, ValueError):
+            return True        # flrig is down; asked again once it answers
+        self.block_support = True
+        if want and not self.block_sent:
+            self.log("flrig: un-keys from %s blocked while VarAC is held" % self.block_label)
+        if not want and self.block_sent:
+            self.log("flrig: un-key block ended")
+        self.block_sent = want
+        return True
 
     def poll(self):
+        if not self.link.up:
+            self.block_support = None  # flrig may come back as another version
+            self.block_sent = False
+        self.send_block_if_due()
         r = self.link.call("rig.get_ptt", reconnect_s=self.reconnect_s)
         now = time.time()
         if r is None:
@@ -1022,8 +1080,13 @@ class Arbiter:
         if fl_tx:
             self.fl_last_tx_t = now
         # VARA transmitting: PTT on now (a PTT ON without OFF counts for a minute), or a burst or
-        # connect request within vara_burst_hold_s, so the gaps between bursts keep the hold
-        va_burst = (vara_ptt and now - vara_ptt_t < 60) or (now - vara_burst_t < self.vara_burst_hold_s)
+        # connect request within vara_burst_hold_s, so the gaps between bursts keep the hold.
+        # [unkey-block] Not while VarAC is held: a held VarAC puts nothing on the air (VarAC:
+        # "Ignoring PTT request by the modem"). Counted, VARA's refused attempts held the others
+        # for nothing and made VarAC "transmitting", so its hold was neither renewed nor released
+        # until VarAC's own 30 s timeout (W8UFO 10 Nov 19:48:45 to 19:49:15).
+        va_burst = not self.va.held and \
+            ((vara_ptt and now - vara_ptt_t < 60) or (now - vara_burst_t < self.vara_burst_hold_s))
         va_tx = vara_link or va_burst
         keyed = self.flrig.ptt is True
         # who owns the keyed radio: a program transmitting now, or one that stopped within
@@ -1069,6 +1132,9 @@ class Arbiter:
                 want = bool(others) and not p.transmitting and not p.overridden and p.enabled
                 reason = others[0] if others else ""
                 self._apply(p, want, reason, now)
+            # [unkey-block] VarAC's lock holds its keys but not VARA's un-keys: while VarAC is
+            # held, flrig-subspace ignores un-keys with VarAC's label (renewed; lapses by itself)
+            self.flrig.block_want = self.va.held
 
             # the dial is never arbitrated, only logged, once per change
             if self.flrig.vfo is not None and self.flrig.vfo != self.logged_vfo:
@@ -1080,6 +1146,10 @@ class Arbiter:
             self.ss.status = self.subspace.status
             self.fl.status = "connected" if self.fldigi.link.up else "not answering"
             self.va.status = self.varac.status + "; " + self.lever.status
+            if self.va.held and self.flrig.block_sent and self.flrig.block_support:
+                self.va.status += "; un-keys blocked at flrig"
+            elif self.flrig.block_support is False:
+                self.va.status += "; un-key block not available with this flrig"
 
     def _apply(self, p, want, reason, now):
         if want and not p.held:
@@ -1096,8 +1166,10 @@ class Arbiter:
                 self._renew(p, reason, now)
                 p.renewed_t = now
         elif not want and p.held:
-            if p.transmitting:
-                return   # never touch a program while it transmits
+            # never touch a program while it transmits; a held VarAC puts nothing on the air,
+            # so releasing it touches nothing
+            if p.transmitting and p is not self.va:
+                return
             self._release(p)
             p.held = False
             self.log("%s: released (%s over)" % (p.name, p.reason))
@@ -1177,6 +1249,11 @@ class Arbiter:
                         pass
                     p.held = False
                     self.log("%s: released (arbiter closing)" % p.name)
+            self.flrig.block_want = False
+            try:
+                self.flrig.send_block_if_due()   # unsent, the block lapses within unkey_block_ms
+            except Exception:
+                pass
 
     def run(self):
         self.log("arbiter %s started; holds: Subspace %s, fldigi %s, VarAC %s (lever: %s)" % (

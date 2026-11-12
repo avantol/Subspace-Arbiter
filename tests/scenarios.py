@@ -36,9 +36,10 @@ RENEW_S = 1.0         # bench: see renews happen within a scenario
 class Bench:
     """Fakes plus one arbiter: the Python module in a thread, or the binary as a subprocess."""
 
-    def __init__(self, lease_s=300.0, max_connections=2, holds=("on", "on", "on"), extra_ini=""):
+    def __init__(self, lease_s=300.0, max_connections=2, holds=("on", "on", "on"), extra_ini="",
+                 flrig_has_block=True, varac_extra=""):
         self.dir = tempfile.mkdtemp(prefix="arbiter-bench-")
-        self.flrig = FakeFlrig()
+        self.flrig = FakeFlrig(has_block=flrig_has_block)
         self.fldigi = FakeFldigi(self.flrig)
         self.subspace = FakeSubspace(self.flrig, lease_s=lease_s, max_connections=max_connections)
         self.varalog = VaracLog(os.path.join(self.dir, "VarAC_vara_commands.log"))
@@ -53,6 +54,7 @@ class Bench:
                     % (POLL_MS, FRAME_GAP_S, RENEW_S))
             f.write(extra_ini)
             f.write("\n[varac]\nlog_path = %s\n" % self.varalog.path)
+            f.write(varac_extra)
         self.arb = None
         self.thread = None
         self.proc = None
@@ -488,6 +490,76 @@ def scenario_12():
     return fails
 
 
+def scenario_13():
+    """[unkey-block] VarAC held for a Subspace message while VARA keeps asking to transmit (W8UFO
+    10 Nov 19:48): VARA's refused attempts are not VARA TX, VarAC's hold is renewed until the
+    message ends and then released, and while VarAC is held flrig is told to ignore VarAC's
+    un-keys, so VARA's PTT OFF does not cut Subspace's frames."""
+    b = Bench(varac_extra="varac_renew_s = 0.5\nunkey_block_renew_s = 0.5\n")
+    fails = []
+    try:
+        b.start()
+        th = threading.Thread(target=b.subspace.transmit, kwargs=dict(frames=4, frame_s=1.5))
+        th.start()
+        check(wait_for(lambda: b.held("VarAC"), 2.0), "VarAC held for the Subspace message", fails)
+        blocks = lambda: [c[1] for c in b.flrig.calls if c[0] == "block_unkey"]
+        check(wait_for(lambda: any(ms > 0 for _, ms in blocks()), 2.0), "flrig told to block un-keys", fails)
+        check(all(lbl == "XML-RPC.NET" for lbl, ms in blocks() if ms > 0), "the label is VarAC's (XML-RPC.NET)", fails)
+        check(wait_for(lambda: b.logged("flrig: un-keys from XML-RPC.NET blocked while VarAC is held"), 2.0),
+              "the block is logged", fails)
+        row1 = b.varalog.arbiter_row()
+        # VARA keeps asking; VarAC refuses each key and sends each un-key (bench 11 Nov)
+        tried_keyed = 0
+        for _ in range(6):
+            b.varalog.line("PTT ON")
+            time.sleep(0.35)
+            b.varalog.line("PTT OFF")
+            if b.flrig.ptt == 1:
+                tried_keyed += 1
+                b.flrig.labelled_set_ptt(0, "XML-RPC.NET")
+                check(b.flrig.ptt == 1, "VarAC's un-key during a Subspace frame ignored at flrig", fails)
+            time.sleep(0.35)
+        check(tried_keyed > 0, "VarAC's un-key was tried while Subspace was keyed (%d times)" % tried_keyed, fails)
+        check(not b.held("Subspace") and not b.logged("hold reason now %s" % A.R_VARA_TX)
+              and not b.logged("Subspace: disabled (%s)" % A.R_VARA_TX),
+              "VARA's refused attempts are not VARA TX: nothing held for them", fails)
+        row2 = b.varalog.arbiter_row()
+        check(row1 is not None and row2 is not None and row2[1] != row1[1] and row2[0] == 1,
+              "VarAC's hold renewed while VARA kept asking", fails)
+        th.join(12.0)
+        check(len(b.subspace.sent) == 1, "the message went out", fails)
+        check(wait_for(lambda: not b.held("VarAC"), 4.0), "VarAC released when the message ended", fails)
+        check(wait_for(lambda: blocks() and blocks()[-1][1] == 0, 3.0), "the un-key block ended with the hold", fails)
+        check(wait_for(lambda: b.logged("flrig: un-key block ended"), 2.0), "the end is logged", fails)
+        b.flrig.key(1, "Hamlib")
+        b.flrig.labelled_set_ptt(0, "XML-RPC.NET")
+        check(b.flrig.ptt == 0, "with VarAC released, its un-key is carried out again", fails)
+    finally:
+        b.stop()
+    return fails
+
+
+def scenario_14():
+    """[unkey-block] A flrig without rig.block_unkey (stock, or flrig-subspace before 8): said once,
+    flrig still counted as answering, VarAC held and released by its lock as before."""
+    b = Bench(flrig_has_block=False)
+    fails = []
+    try:
+        b.start()
+        b.fldigi._tx()
+        check(wait_for(lambda: b.held("VarAC"), 3.0), "VarAC held while fldigi transmits", fails)
+        msg = "flrig: this flrig has no un-key block"
+        check(wait_for(lambda: b.logged(msg), 2.0), "the missing command is logged", fails)
+        time.sleep(1.5)
+        check(sum(msg in l for l in b.log_lines()) == 1, "logged once, not asked again", fails)
+        check(not b.logged("flrig: not answering"), "flrig still counted as answering", fails)
+        b.fldigi._rx()
+        check(wait_for(lambda: not b.held("VarAC"), 3.0), "VarAC released when fldigi stops", fails)
+    finally:
+        b.stop()
+    return fails
+
+
 SCENARIOS = {
     1: ("Replay of 27 Oct: auto-reply due during a VARA link", scenario_1),
     2: ("VARA keys while a Subspace message is in progress", scenario_2),
@@ -501,6 +573,8 @@ SCENARIOS = {
     10: ("Arbiter killed while holding fldigi; the next one restores it", scenario_10),
     11: ("A failed fldigi state query during a hold; the release still sends rx_tx", scenario_11),
     12: ("A waiting Subspace frame holds the others before the key-up", scenario_12),
+    13: ("A held VarAC while VARA keeps asking: no VARA TX, fresh hold, un-keys blocked", scenario_13),
+    14: ("A flrig without the un-key block", scenario_14),
 }
 
 

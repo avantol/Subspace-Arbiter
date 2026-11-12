@@ -68,7 +68,7 @@ bool XmlRpcClient::parse(const QByteArray &xml, QVariant &value, QString &fault)
     return !x.hasError();
 }
 
-bool XmlRpcClient::call(const QString &method, const QVariantList &args, Reply cb) {
+bool XmlRpcClient::call(const QString &method, const QVariantList &args, Reply cb, bool faultIsAnswer) {
     if (m_inflight) return false;
     double now = nowS();
     if (!m_up && now < m_downUntil) return false;
@@ -76,16 +76,23 @@ bool XmlRpcClient::call(const QString &method, const QVariantList &args, Reply c
     req.setHeader(QNetworkRequest::ContentTypeHeader, "text/xml");
     req.setTransferTimeout(m_timeoutMs);
     m_inflight = m_nam.post(req, build(method, args));
-    connect(m_inflight, &QNetworkReply::finished, this, [this, cb]() { finished(m_inflight, cb); });
+    connect(m_inflight, &QNetworkReply::finished, this,
+            [this, cb, faultIsAnswer]() { finished(m_inflight, cb, faultIsAnswer); });
     return true;
 }
 
-void XmlRpcClient::finished(QNetworkReply *r, Reply cb) {
+void XmlRpcClient::finished(QNetworkReply *r, Reply cb, bool faultIsAnswer) {
     m_inflight = nullptr;
     r->deleteLater();
     QVariant value;
     QString fault;
-    bool ok = r->error() == QNetworkReply::NoError && parse(r->readAll(), value, fault);
+    bool netOk = r->error() == QNetworkReply::NoError;
+    QByteArray body = netOk ? r->readAll() : QByteArray();
+    bool ok = netOk && parse(body, value, fault);
+    if (!ok && netOk && faultIsAnswer && body.contains("<fault>")) {
+        if (cb) cb(false, QVariant(QStringLiteral("fault: ") + fault));
+        return;
+    }
     if (ok) {
         if (!m_up) {
             m_up = true;

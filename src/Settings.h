@@ -35,6 +35,9 @@ struct Settings {
     QString varacLever = "cluster_lock";  // or none = observe only
     QString varacDbPath;           // blank = VarAC.db beside the command log
     double varacRenewS = 10;       // measured: VarAC drops a lock 30 s after its last keepalive
+    QString unkeyBlockLabel = "XML-RPC.NET";  // measured 2026-11-12: VarAC's HTTP User-Agent
+    int unkeyBlockMs = 15000;      // chosen: flrig-subspace's cap; a stopped arbiter's block lapses within it
+    double unkeyBlockRenewS = 5;   // chosen: three renewals inside one block
     // [log]
     QString logFile = "arbiter.log";
 
