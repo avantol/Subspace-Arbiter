@@ -267,7 +267,9 @@ def scenario_5():
         b.varalog.line("CONNECTED")
         wait_for(lambda: b.held("Subspace"), 3.0)
         b.flrig.vfo = 7110000
-        time.sleep(1.6)      # the dial is read once a second
+        # the dial is read once a second; with no RIG.FREQ from Subspace the line waits 2 s for one
+        wait_for(lambda: b.logged("dial 7110000"), 4.0)
+        time.sleep(0.5)
         check(all(c[0] != "set_vfo" and c[0] != "set_ptt" for c in b.flrig.calls), "arbiter touched nothing on flrig", fails)
         dial = [l for l in b.log_lines() if "dial 7110000" in l]
         check(len(dial) == 1 and "VARA link" in dial[0], "dial change logged once, with the link noted", fails)
@@ -560,6 +562,74 @@ def scenario_14():
     return fails
 
 
+def scenario_15():
+    """[fldigi-frozen] fldigi answered, then stopped (W1NEM 12 Nov 18:29): a hold that comes due is
+    not silent ("not held ... not answering since"), said once per busy period; when fldigi answers
+    again it is held as before."""
+    b = Bench()
+    fails = []
+    try:
+        b.start()
+        b.fldigi.fail_state = 10 ** 6
+        check(wait_for(lambda: b.logged("fldigi: not answering"), 3.0), "fldigi stops answering", fails)
+        th = threading.Thread(target=b.subspace.transmit, kwargs=dict(frames=3, frame_s=0.5, gap_s=0.3))
+        th.start()
+        check(wait_for(lambda: b.held("VarAC"), 2.0), "VarAC held for the Subspace message", fails)
+        skip = "fldigi: not held (%s): not answering since " % A.R_SUBSPACE
+        check(wait_for(lambda: b.logged(skip), 2.0), "the skipped fldigi hold is logged", fails)
+        th.join(5.0)
+        check(len(b.subspace.sent) == 1, "the message went out", fails)
+        check(sum(skip in l for l in b.log_lines()) == 1, "said once in the busy period, not once per tick", fails)
+        check(not b.held("fldigi") and not b.fldigi.rx_only, "nothing sent to the silent fldigi", fails)
+        if not BIN:
+            check(b.arb.fl.status.startswith("not answering since ") and "fldigi may be frozen" in b.arb.fl.status,
+                  "window: 'not answering since ...', no setup remedy", fails)
+        wait_for(lambda: not b.held("VarAC"), 4.0)
+        b.fldigi.fail_state = 0
+        check(wait_for(lambda: sum("fldigi: connected" in l for l in b.log_lines()) == 2, 4.0),
+              "fldigi answers again", fails)
+        th = threading.Thread(target=b.subspace.transmit, kwargs=dict(frames=1, frame_s=0.5))
+        th.start()
+        check(wait_for(lambda: b.held("fldigi") and b.fldigi.rx_only, 2.0), "fldigi held as before", fails)
+        th.join(5.0)
+        check(wait_for(lambda: not b.held("fldigi") and not b.fldigi.rx_only, 4.0), "and released", fails)
+        check(sum(skip in l for l in b.log_lines()) == 1, "no skip line while fldigi answers", fails)
+    finally:
+        b.fldigi.fail_state = 0
+        b.stop()
+    return fails
+
+
+def scenario_16():
+    """[dial] A dial change is Subspace's when its RIG.FREQ comes within 2 s either side of the
+    arbiter's dial reading (W1NEM 12 Nov 21:00:29: read first, logged "program unknown")."""
+    b = Bench()
+    fails = []
+    dial = lambda hz: [l for l in b.log_lines() if "flrig: dial %d " % hz in l]
+    try:
+        b.start()
+        time.sleep(1.2)                       # the starting dial has been read
+        b.subspace.push("RIG.FREQ", DIAL=3564000)
+        time.sleep(0.2)
+        b.flrig.vfo = 3564000                 # RIG.FREQ first, dial reading after
+        check(wait_for(lambda: dial(3564000), 3.0), "dial change logged (RIG.FREQ first)", fails)
+        check(dial(3564000) and dial(3564000)[0].endswith("(Subspace)"), "credited to Subspace", fails)
+        time.sleep(2.5)
+        b.flrig.vfo = 7115000                 # dial reading first, RIG.FREQ 1.3 s later
+        time.sleep(1.3)
+        b.subspace.push("RIG.FREQ", DIAL=7115000)
+        check(wait_for(lambda: dial(7115000), 3.0), "dial change logged (RIG.FREQ after)", fails)
+        check(dial(7115000) and dial(7115000)[0].endswith("(Subspace)"), "credited to Subspace, not 'program unknown'", fails)
+        time.sleep(2.5)
+        b.flrig.vfo = 14078000                # no RIG.FREQ at all
+        check(wait_for(lambda: dial(14078000), 4.0), "dial change logged (no RIG.FREQ)", fails)
+        check(dial(14078000) and dial(14078000)[0].endswith("(program unknown)"), "program unknown", fails)
+        check(len(dial(3564000)) == 1 and len(dial(7115000)) == 1, "each change logged once", fails)
+    finally:
+        b.stop()
+    return fails
+
+
 SCENARIOS = {
     1: ("Replay of 27 Oct: auto-reply due during a VARA link", scenario_1),
     2: ("VARA keys while a Subspace message is in progress", scenario_2),
@@ -575,6 +645,8 @@ SCENARIOS = {
     12: ("A waiting Subspace frame holds the others before the key-up", scenario_12),
     13: ("A held VarAC while VARA keeps asking: no VARA TX, fresh hold, un-keys blocked", scenario_13),
     14: ("A flrig without the un-key block", scenario_14),
+    15: ("fldigi answered, then stopped: a skipped hold is logged", scenario_15),
+    16: ("Dial change credited to Subspace with RIG.FREQ before or after", scenario_16),
 }
 
 

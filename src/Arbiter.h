@@ -39,6 +39,9 @@ struct Program {
     QString reason;
     double heldT = 0, renewedT = 0, renewS = 60;
     bool overridden = false;   // operator released it during this busy period
+    bool seenUp = false;       // answered at least once since the arbiter started
+    double downT = 0;          // when it stopped answering after that (0 = answering)
+    bool skipLogged = false;   // "not held (not answering)" said this busy period
     QString status;
     QStringList own;           // the reasons that are this program's own transmitting
 };
@@ -71,6 +74,8 @@ private:
     void renew(Program &p, const QString &reason);
     void release(Program &p);
     void releaseAll();
+    bool dialFromSubspace() const;
+    void logDial();
 
     Settings m_s;
     Log &m_log;
@@ -93,5 +98,9 @@ private:
     double m_unknownKeyedUntil = 0;
     bool m_busyPeriod = false;
     QHash<QString, bool> m_sources;
-    qint64 m_loggedVfo = -1;
+    qint64 m_seenVfo = -1;
+    // a dial change waiting for its line (-1 = none): seen at m_dialT, during a VARA link or not
+    qint64 m_dialVfo = -1;
+    double m_dialT = 0;
+    bool m_dialLink = false;
 };

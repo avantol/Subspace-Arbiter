@@ -50,6 +50,14 @@ R_SUBSPACE = "Subspace TX"
 R_UNKNOWN = "radio keyed"
 REASON_ORDER = (R_VARA, R_VARA_TX, R_FLDIGI, R_SUBSPACE, R_UNKNOWN)
 
+# Subspace's RIG.FREQ and flrig's dial reading (once a second) arrive in either order; a dial
+# change is Subspace's when its RIG.FREQ came within this many seconds either side. chosen.
+DIAL_MATCH_S = 2.0
+
+
+def clock_text(t):
+    return time.strftime("%H:%M:%S", time.localtime(t))
+
 # Every number, with its basis. These are the defaults written to arbiter.ini.
 DEFAULT_INI = """\
 # Arbiter settings. Every number has its basis stated: "measured" on a real
@@ -944,6 +952,9 @@ class Program:
         self.renewed_t = 0.0
         self.renew_s = 60.0          # set per program by the Arbiter
         self.overridden = False      # operator released it during this busy period
+        self.seen_up = False         # answered at least once since the arbiter started
+        self.down_t = 0.0            # when it stopped answering after that (0 = answering)
+        self.skip_logged = False     # "not held (not answering)" said this busy period
         self.status = ""
 
 
@@ -985,7 +996,11 @@ class Arbiter:
         self.ss_hold_owned = False    # our TX.SET_ENABLED false changed the button (else it was off already)
         self.ss_tx_enabled = None
         self.ss_dial_t = 0.0
-        self.logged_vfo = None
+        self.seen_vfo = None
+        # a dial change waiting for its line (None = none): seen at dial_t, during a VARA link or not
+        self.dial_vfo = None
+        self.dial_t = 0.0
+        self.dial_link = False
 
         self.unknown_keyed_until = 0.0
         self.busy_period = False
@@ -1112,6 +1127,11 @@ class Arbiter:
             self.ss.connected = self.subspace.up
             self.fl.connected = self.fldigi.link.up
             self.va.connected = self.varac.path is not None
+            for p in self.programs:
+                if p.connected:
+                    p.seen_up, p.down_t = True, 0.0
+                elif p.seen_up and not p.down_t:
+                    p.down_t = now
             if self.va.connected:
                 self.lever.set_log_path(self.varac.path)
             self.lever.available   # refreshes its status text
@@ -1126,6 +1146,7 @@ class Arbiter:
                     if p.overridden:
                         self.log("%s: busy period over, override forgotten" % p.name)
                     p.overridden = False
+                    p.skip_logged = False
 
             for p in self.programs:
                 others = [r for r in REASON_ORDER if sources[r] and r not in own[p]]
@@ -1136,26 +1157,55 @@ class Arbiter:
             # held, flrig-subspace ignores un-keys with VarAC's label (renewed; lapses by itself)
             self.flrig.block_want = self.va.held
 
-            # the dial is never arbitrated, only logged, once per change
-            if self.flrig.vfo is not None and self.flrig.vfo != self.logged_vfo:
-                if self.logged_vfo is not None:
-                    who = "Subspace" if now - self.ss_dial_t < 2.0 else "program unknown"
-                    self.log("flrig: dial %d (%s)%s" % (self.flrig.vfo, who, " during a VARA link" if vara_link else ""))
-                self.logged_vfo = self.flrig.vfo
+            # the dial is never arbitrated, only logged, once per change. Subspace's RIG.FREQ may
+            # come after the dial reading (W1NEM 12 Nov 21:00:29: read first, logged "program
+            # unknown"), so without one yet the line waits up to DIAL_MATCH_S for it.
+            if self.flrig.vfo is not None and self.flrig.vfo != self.seen_vfo:
+                if self.dial_vfo is not None:
+                    self._log_dial()   # an earlier change still waiting: decided now
+                if self.seen_vfo is not None:
+                    self.dial_vfo, self.dial_t, self.dial_link = self.flrig.vfo, now, vara_link
+                self.seen_vfo = self.flrig.vfo
+            if self.dial_vfo is not None and (self._dial_from_subspace() or now - self.dial_t >= DIAL_MATCH_S):
+                self._log_dial()
 
+            # a program that answered before and stopped (W1NEM 12 Nov 18:29: fldigi frozen)
+            # needs no setup: its status says since when
             self.ss.status = self.subspace.status
-            self.fl.status = "connected" if self.fldigi.link.up else "not answering"
+            if not self.subspace.up and self.ss.seen_up and not self.ss.status.startswith("refused"):
+                self.ss.status += "  since %s (it was connected before: Subspace closed or stopped answering)" \
+                    % clock_text(self.ss.down_t)
+            if self.fldigi.link.up:
+                self.fl.status = "connected"
+            elif self.fl.seen_up:
+                self.fl.status = "not answering since %s  (it answered before: fldigi may be frozen)" \
+                    % clock_text(self.fl.down_t)
+            else:
+                self.fl.status = "not answering"
             self.va.status = self.varac.status + "; " + self.lever.status
             if self.va.held and self.flrig.block_sent and self.flrig.block_support:
                 self.va.status += "; un-keys blocked at flrig"
             elif self.flrig.block_support is False:
                 self.va.status += "; un-key block not available with this flrig"
 
+    def _dial_from_subspace(self):
+        return self.ss_dial_t > 0 and abs(self.ss_dial_t - self.dial_t) < DIAL_MATCH_S
+
+    def _log_dial(self):
+        who = "Subspace" if self._dial_from_subspace() else "program unknown"
+        self.log("flrig: dial %d (%s)%s" % (self.dial_vfo, who, " during a VARA link" if self.dial_link else ""))
+        self.dial_vfo = None
+
     def _apply(self, p, want, reason, now):
         if want and not p.held:
             if self._hold(p, reason, now):
                 p.held, p.reason, p.held_t, p.renewed_t = True, reason, now, now
                 self.log("%s: disabled (%s)" % (p.name, reason))
+            elif not p.connected and p.seen_up and not p.skip_logged:
+                # it answered before and stopped (W1NEM 12 Nov 18:29, fldigi frozen): the hold
+                # can't go out, and a skipped hold must not be silent. Once per busy period.
+                self.log("%s: not held (%s): not answering since %s" % (p.name, reason, clock_text(p.down_t)))
+                p.skip_logged = True
         elif want and p.held:
             if reason != p.reason:
                 p.reason = reason
@@ -1268,6 +1318,9 @@ class Arbiter:
             dt = self.poll_s - (time.time() - t0)
             if dt > 0:
                 self.stop.wait(dt)
+        with self.lock:
+            if self.dial_vfo is not None:
+                self._log_dial()
         self.release_all()
         self.lever.remove()
         self.subspace.close()

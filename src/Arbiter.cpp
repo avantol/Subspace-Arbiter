@@ -15,6 +15,14 @@
 
 static double nowS() { return QDateTime::currentMSecsSinceEpoch() / 1000.0; }
 
+// Subspace's RIG.FREQ and flrig's dial reading (once a second) arrive in either order; a dial
+// change is Subspace's when its RIG.FREQ came within this many seconds either side. chosen.
+static constexpr double kDialMatchS = 2.0;
+
+static QString clockText(double t) {
+    return QDateTime::fromMSecsSinceEpoch(qint64(t * 1000)).toString("HH:mm:ss");
+}
+
 Arbiter::Arbiter(const Settings &s, Log &log, QObject *parent)
     : QObject(parent), m_s(s), m_log(log), m_pollS(s.pollMs / 1000.0) {
     m_flrig = new FlrigWatch(s, log, this);
@@ -50,6 +58,7 @@ void Arbiter::stop() {
     if (m_stopped) return;
     m_stopped = true;
     m_tick.stop();
+    if (m_dialVfo >= 0) logDial();
     releaseAll();
     m_lever->remove();
     m_flrig->setUnkeyBlock(false);
@@ -184,6 +193,10 @@ void Arbiter::tick() {
     subspace.connected = m_subspace->up();
     fldigi.connected = m_fldigi->up();
     varac.connected = !m_varac->path().isEmpty();
+    for (Program *p : programs()) {
+        if (p->connected) { p->seenUp = true; p->downT = 0; }
+        else if (p->seenUp && p->downT == 0) p->downT = now;
+    }
     if (varac.connected) m_lever->setLogPath(m_varac->path());
     m_lever->available();   // refreshes its status text
     subspace.transmitting = ssTx;
@@ -199,6 +212,7 @@ void Arbiter::tick() {
         for (Program *p : programs()) {
             if (p->overridden) m_log(p->name + ": busy period over, override forgotten");
             p->overridden = false;
+            p->skipLogged = false;
         }
     }
 
@@ -213,21 +227,27 @@ void Arbiter::tick() {
     // flrig-subspace ignores un-keys with VarAC's label (renewed; it lapses by itself)
     m_flrig->setUnkeyBlock(varac.held);
 
-    // the dial is never arbitrated, only logged, once per change
-    if (m_flrig->vfo >= 0 && m_flrig->vfo != m_loggedVfo) {
-        if (m_loggedVfo >= 0) {
-            QString who = now - m_ssDialT < 2.0 ? "Subspace" : "program unknown";
-            m_log(QString("flrig: dial %1 (%2)%3").arg(m_flrig->vfo).arg(who, va.link ? " during a VARA link" : ""));
-        }
-        m_loggedVfo = m_flrig->vfo;
+    // the dial is never arbitrated, only logged, once per change. Subspace's RIG.FREQ may come
+    // after the dial reading (W1NEM 12 Nov 21:00:29: read first, logged "program unknown"),
+    // so without one yet the line waits up to kDialMatchS for it.
+    if (m_flrig->vfo >= 0 && m_flrig->vfo != m_seenVfo) {
+        if (m_dialVfo >= 0) logDial();   // an earlier change still waiting: decided now
+        if (m_seenVfo >= 0) { m_dialVfo = m_flrig->vfo; m_dialT = now; m_dialLink = va.link; }
+        m_seenVfo = m_flrig->vfo;
     }
+    if (m_dialVfo >= 0 && (dialFromSubspace() || now - m_dialT >= kDialMatchS)) logDial();
 
-    // the status texts carry the remedy, so a fresh station needs no manual
+    // the status texts carry the remedy, so a fresh station needs no manual; a program that
+    // answered before and stopped (W1NEM 12 Nov 18:29: fldigi frozen) needs no setup, so it
+    // gets the time it stopped instead
     subspace.status = m_subspace->status();
     if (!m_subspace->up() && !subspace.status.startsWith("refused"))
-        subspace.status += "  (Subspace: Settings > Reporting: TCP API enabled, Accept TCP requests)";
+        subspace.status += subspace.seenUp
+            ? "  since " + clockText(subspace.downT) + " (it was connected before: Subspace closed or stopped answering)"
+            : "  (Subspace: Settings > Reporting: TCP API enabled, Accept TCP requests)";
     fldigi.status = m_fldigi->up() ? "connected"
-                                   : "not answering  (fldigi: Configure > Misc > TCP-IP sessions > XML: address 127.0.0.1, port 7362)";
+        : fldigi.seenUp ? "not answering since " + clockText(fldigi.downT) + "  (it answered before: fldigi may be frozen)"
+                        : "not answering  (fldigi: Configure > Misc > TCP-IP sessions > XML: address 127.0.0.1, port 7362)";
     QString lever = m_lever->status();
     if (lever.startsWith("cluster lock: VarAC.db not found"))
         lever += "  (VarAC: Settings > Cluster enabled, PTT Lock ON, restart VarAC)";
@@ -297,11 +317,27 @@ QString Arbiter::setupText() const {
         "every program works as before.");
 }
 
+bool Arbiter::dialFromSubspace() const {
+    return m_ssDialT > 0 && qAbs(m_ssDialT - m_dialT) < kDialMatchS;
+}
+
+void Arbiter::logDial() {
+    m_log(QString("flrig: dial %1 (%2)%3")
+              .arg(m_dialVfo)
+              .arg(dialFromSubspace() ? "Subspace" : "program unknown", m_dialLink ? " during a VARA link" : ""));
+    m_dialVfo = -1;
+}
+
 void Arbiter::apply(Program &p, bool want, const QString &reason, double now) {
     if (want && !p.held) {
         if (hold(p, reason)) {
             p.held = true; p.reason = reason; p.heldT = now; p.renewedT = now;
             m_log(p.name + ": disabled (" + reason + ")");
+        } else if (!p.connected && p.seenUp && !p.skipLogged) {
+            // it answered before and stopped (W1NEM 12 Nov 18:29, fldigi frozen): the hold
+            // can't go out, and a skipped hold must not be silent. Once per busy period.
+            m_log(p.name + ": not held (" + reason + "): not answering since " + clockText(p.downT));
+            p.skipLogged = true;
         }
     } else if (want && p.held) {
         if (reason != p.reason) {
