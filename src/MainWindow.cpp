@@ -86,12 +86,12 @@ void MainWindow::refresh() {
     for (Row &row : m_rows) {
         Program *p = row.p;
         row.conn->setText(p->status.left(140));
-        QString st = p->transmitting ? "TX" : (p->held ? "TX Disabled" : (p->connected ? "RX" : "-"));
+        QString st = p->transmitting ? "TX" : (p->held ? "TX Disabled" : (p->waiting ? "Waiting" : (p->connected ? "RX" : "-")));
         row.state->setText(st);
-        row.state->setStyleSheet(st == "TX" ? "color:#b00" : st == "TX Disabled" ? "color:#a60" : "");
-        row.reason->setText(p->reason);
+        row.state->setStyleSheet(st == "TX" ? "color:#b00" : (st == "TX Disabled" || st == "Waiting") ? "color:#a60" : "");
+        row.reason->setText(p->held ? p->reason : p->waitReason);
         QString left;
-        if (p->held && p != &m_arb.fldigi)
+        if (p->held && p->leased)
             left = QString("%1 s").arg(qMax(0, int(p->renewS - (now - p->renewedT))));
         row.renew->setText(left);
         if (row.enable->isChecked() != p->enabled) {

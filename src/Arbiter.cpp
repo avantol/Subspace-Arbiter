@@ -3,6 +3,7 @@
 #include "FlrigWatch.h"
 #include "Log.h"
 #include "SubspaceLink.h"
+#include "VaraLayer.h"
 #include "VaracLever.h"
 #include "VaracWatch.h"
 #include "config.h"
@@ -28,16 +29,26 @@ Arbiter::Arbiter(const Settings &s, Log &log, QObject *parent)
     m_flrig = new FlrigWatch(s, log, this);
     m_fldigi = new FldigiLink(s, log, this);
     m_subspace = new SubspaceLink(s, log, this);
-    m_varac = new VaracWatch(s, log, this);
-    m_lever = new VaracLever(s, log, this);
+    if (s.varacLever == "layer") {
+        m_layer = new VaraLayer(s, log, this);
+        connect(m_layer, &VaraLayer::changed, this, &Arbiter::decideSoon);
+    } else {
+        m_varac = new VaracWatch(s, log, this);
+        m_lever = new VaracLever(s, log, this);
+    }
+    connect(m_fldigi, &FldigiLink::changed, this, &Arbiter::decideSoon);
+    connect(m_subspace, &SubspaceLink::eventQueued, this, &Arbiter::decideSoon);
 
     subspace.name = "Subspace"; subspace.enabled = s.holdSubspace; subspace.renewS = s.renewS;
     subspace.own = {Reason::SUBSPACE};
     fldigi.name = "fldigi"; fldigi.enabled = s.holdFldigi; fldigi.renewS = s.renewS;
     fldigi.own = {Reason::FLDIGI};
+    fldigi.leased = false;        // rx_only has no lease
     varac.name = "VarAC"; varac.enabled = s.holdVarac; varac.renewS = s.varacRenewS;
     varac.own = {Reason::VARA, Reason::VARA_TX};
+    varac.leased = !m_layer;      // the layer's hold ends with the layer, not with a lease
     for (const QString &r : Reason::ORDER) m_sources[r] = false;
+    m_fldigi->setAsking(s.askFldigi && fldigi.enabled);
 
     m_tick.setInterval(s.pollMs);
     connect(&m_tick, &QTimer::timeout, this, &Arbiter::tick);
@@ -48,8 +59,10 @@ Arbiter::~Arbiter() { stop(); }
 void Arbiter::start() {
     m_log(QString("arbiter %1 started; holds: Subspace %2, fldigi %3, VarAC %4 (lever: %5)%6")
               .arg(ARBITER_VERSION, subspace.enabled ? "on" : "off", fldigi.enabled ? "on" : "off",
-                   varac.enabled ? "on" : "off", m_lever->kind(),
+                   varac.enabled ? "on" : "off", m_layer ? QString("layer") : m_lever->kind(),
                    m_s.iniPath.isEmpty() ? QString() : "; settings from " + m_s.iniPath));
+    m_log(QString("study build: ask / grant: Subspace %1, fldigi %2")
+              .arg(m_s.askSubspace ? "on" : "off", m_s.askFldigi ? "on" : "off"));
     m_tick.start();
     QTimer::singleShot(0, this, &Arbiter::tick);
 }
@@ -60,7 +73,12 @@ void Arbiter::stop() {
     m_tick.stop();
     if (m_dialVfo >= 0) logDial();
     releaseAll();
-    m_lever->remove();
+    // [study] Subspace stops asking now instead of when its lease lapses; fldigi's lease
+    // (ask/fldigi_lease_ms) lapses by itself
+    if (m_ssAskOn && m_subspace->up()) m_subspace->request("TX.SET_ASK", {{"ASK", false}}, nullptr);
+    m_ssAskOn = false;
+    if (m_layer) m_layer->close();   // VarAC's and VARA's connections end with the arbiter
+    else m_lever->remove();
     m_flrig->setUnkeyBlock(false);
     // the releases are network sends: let them go out before the sockets close
     // (kExitFlushMs = 600, chosen: fldigi and Subspace answer in well under that).
@@ -74,7 +92,7 @@ void Arbiter::stop() {
     QTimer::singleShot(600, &flush, &QEventLoop::quit);
     flush.exec();
     m_subspace->close();
-    m_varac->close();
+    if (m_varac) m_varac->close();
 }
 
 // -- Subspace events ------------------------------------------------------------
@@ -85,8 +103,30 @@ void Arbiter::subspaceEvents(double now) {
         if (t == "RIG.PTT") {
             bool on = p.contains("PTT") ? p.value("PTT").toBool()
                                         : msg.value("value").toString().toLower() == "on";
-            if (on) { m_ssPtt = true; m_ssMsg = true; }
+            if (on) { m_ssPtt = true; m_ssMsg = true; if (m_ssGrantId != 0) m_ssGrantKeyed = true; }
             else { m_ssPtt = false; m_ssLastOffT = now; }
+        } else if (t == "TX.ASK") {
+            // [study] ASKING true: a message's first frame waits for a grant. false: that
+            // ask is given up, or the granted message is over.
+            qint64 id = qint64(p.value("ASK_ID").toDouble());
+            if (p.value("ASKING").toBool()) {
+                if (id != 0 && id != m_ssAskId && id != m_ssGrantId) {
+                    m_ssAskId = id;
+                    m_ssAskT = now;
+                    m_ssAskTold.clear();
+                    m_log(QString("Subspace: asks to transmit (message %1, key-up in %2 ms)")
+                              .arg(id).arg(qint64(p.value("KEYUP_IN_MS").toDouble())));
+                }
+            } else if (id == m_ssAskId && id != 0) {
+                m_ssAskId = 0;
+                m_ssAskTold.clear();
+                m_log(QString("Subspace: no longer asks (message %1)").arg(id));
+            } else if (id == m_ssGrantId && id != 0) {
+                m_log(QString("Subspace: transmission over (message %1, %2 s after the grant)")
+                          .arg(id).arg(now - m_ssGrantT, 0, 'f', 1));
+                m_ssGrantId = 0;
+                m_ssGrantKeyed = false;
+            }
         } else if (t == "TX.COMPLETE") {
             m_ssMsg = false;
         } else if (t == "TX.PENDING") {
@@ -118,9 +158,126 @@ void Arbiter::subspaceEvents(double now) {
             subspace.held = false;
             m_ssHoldOwned = false;
             m_ssPendingUntil = 0;
+            m_ssAskId = 0;
+            if (m_ssGrantId != 0) endSubspaceGrant("Subspace is closing");
             m_log("Subspace: closing");
         }
     }
+}
+
+// -- [study] ask / grant ----------------------------------------------------------
+bool Arbiter::asks(const Program &p) const {
+    // Subspace not known yet (the first TX.SET_ASK is on its way, 2 s at most): not held
+    // with its TX switch meanwhile; that switch throws a waiting message away
+    if (&p == &subspace) return m_s.askSubspace && m_ssAskSupport != 0;
+    if (&p == &fldigi) return m_fldigi->asks();
+    return false;   // VarAC never asks: the layer holds it
+}
+
+QStringList Arbiter::othersThan(const Program &p) const {
+    QStringList others;
+    for (const QString &r : Reason::ORDER)
+        if (m_sources.value(r) && !p.own.contains(r)) others << r;
+    return others;
+}
+
+QStringList Arbiter::inTheWayOf(const Program &p) const {
+    // what a grant waits for: the other programs, and the radio itself. fldigi reports RX
+    // about 1 s before its PTT off reaches flrig (measured, see unkey_claim_s): a program
+    // granted in that second would key a radio that the late PTT off then un-keys.
+    QStringList others = othersThan(p);
+    if (others.isEmpty() && m_flrig->ptt == 1) others << Reason::UNKNOWN;
+    return others;
+}
+
+void Arbiter::subspaceAsk(double now) {
+    bool want = m_s.askSubspace && subspace.enabled;
+    if (!want) {
+        if (m_ssAskOn) {
+            m_subspace->request("TX.SET_ASK", {{"ASK", false}}, nullptr);
+            m_log("Subspace: no longer asked to ask (its hold is switched off)");
+        }
+        m_ssAskOn = false;
+        m_ssAskSentT = 0;
+        m_ssAskId = 0;
+        return;
+    }
+    // sent again every subspace_renew_s, also to a Subspace that did not answer: one
+    // missed answer must not leave a Subspace that can ask held with its TX switch
+    if (m_ssAskSentT > 0 && now - m_ssAskSentT < m_s.subspaceAskRenewS) return;
+    m_ssAskSentT = now;
+    m_ssAskOn = true;
+    m_subspace->request("TX.SET_ASK", {{"ASK", true}, {"LEASE_MS", m_s.subspaceAskLeaseMs}}, [this](const QJsonObject &r) {
+        if (!m_subspace->up()) return;   // the link dropped: nothing is known
+        if (r.isEmpty()) {
+            // a Subspace without ask / grant gives no answer to a request it does not know.
+            // One that answered before keeps its 1: its own lease ends its asking.
+            if (m_ssAskSupport == -1) {
+                m_ssAskSupport = 0;
+                m_log("Subspace: this Subspace has no ask / grant (TX.SET_ASK not answered): held with its TX switch as before");
+            }
+            return;
+        }
+        if (m_ssAskSupport != 1) m_log("Subspace: asks before it transmits; not held with its TX switch");
+        m_ssAskSupport = 1;
+    });
+}
+
+void Arbiter::endSubspaceGrant(const QString &why) {
+    m_log(QString("Subspace: grant over (%1)").arg(why));
+    m_ssGrantId = 0;
+    m_ssGrantKeyed = false;
+}
+
+void Arbiter::considerSubspace(double now) {
+    if (m_ssAskId == 0) return;
+    QStringList const others = inTheWayOf(subspace);
+    if (!others.isEmpty() && !subspace.overridden) {
+        subspace.waiting = true;
+        subspace.waitReason = others.first();
+        if (others.first() != m_ssAskTold) {   // Subspace shows what it waits for
+            m_ssAskTold = others.first();
+            m_subspace->request("TX.GRANT", {{"ASK_ID", double(m_ssAskId)}, {"GRANT", false}, {"REASON", m_ssAskTold}}, nullptr);
+            m_log(QString("Subspace: waits (%1)").arg(m_ssAskTold));
+        }
+        return;
+    }
+    qint64 const id = m_ssAskId;
+    m_ssAskId = 0;
+    m_ssAskTold.clear();
+    m_ssGrantId = id;
+    m_ssGrantT = now;
+    m_ssGrantKeyed = false;
+    m_subspace->request("TX.GRANT", {{"ASK_ID", double(id)}, {"GRANT", true}}, [this, id](const QJsonObject &r) {
+        // no answer: the rule in decide() ends a grant that is followed by no key-up
+        if (m_ssGrantId != id || r.isEmpty()) return;
+        if (!r.value("params").toObject().value("OK").toBool()) endSubspaceGrant("Subspace no longer waits for it");
+    });
+    m_log(QString("Subspace: granted (message %1, %2 s after it asked)").arg(id).arg(now - m_ssAskT, 0, 'f', 1));
+    // it has the radio from this instant: whatever is decided next in this pass sees it
+    m_sources[Reason::SUBSPACE] = true;
+    subspace.transmitting = true;
+}
+
+void Arbiter::considerFldigi(double now) {
+    if (m_flWaitSerial == 0) return;
+    QStringList const others = inTheWayOf(fldigi);
+    if (!others.isEmpty() && !fldigi.overridden) {
+        fldigi.waiting = true;
+        fldigi.waitReason = others.first();
+        if (others.first() != m_flWaitTold) {
+            m_flWaitTold = others.first();
+            m_log(QString("fldigi: waits (%1)").arg(m_flWaitTold));
+        }
+        return;
+    }
+    m_fldigi->grant(m_flWaitSerial);
+    m_log(QString("fldigi: granted (start %1, %2 s after it asked)").arg(m_flWaitSerial).arg(now - m_flWaitT, 0, 'f', 1));
+    m_flWaitSerial = 0;
+    m_flWaitTold.clear();
+    m_flLastTxT = now;
+    m_sources[Reason::FLDIGI] = true;
+    fldigi.transmitting = true;
 }
 
 void Arbiter::subspaceStatePoll(double now) {
@@ -141,16 +298,66 @@ void Arbiter::tick() {
     double now = nowS();
     m_flrig->poll();
     m_fldigi->poll();
+    if (m_subspace->up()) {
+        subspaceStatePoll(now);
+        subspaceAsk(now);
+    }
+    decide();
+}
+
+void Arbiter::decideSoon() {
+    // queued: the report that asks for it is handled in full first, and several reports
+    // in one pass of the event loop give one decide()
+    if (m_decideQueued || m_stopped) return;
+    m_decideQueued = true;
+    QMetaObject::invokeMethod(this, [this]() {
+        m_decideQueued = false;
+        if (!m_stopped) decide();
+    }, Qt::QueuedConnection);
+}
+
+void Arbiter::decide() {
+    double now = nowS();
     subspaceEvents(now);
-    if (m_subspace->up()) subspaceStatePoll(now);
-    VaracWatch::Snapshot va = m_varac->snapshot();
+    if (!m_subspace->up()) {
+        // [study] a program that stopped has nothing: its ask, its grant and its
+        // transmitting end with its connection, and the next Subspace is asked anew
+        if (m_ssGrantId != 0) endSubspaceGrant("Subspace is not connected");
+        if (m_ssPtt || m_ssMsg || m_ssBusy) m_log("Subspace: not connected; no longer counted as transmitting");
+        m_ssPtt = m_ssMsg = m_ssBusy = false;
+        m_ssPendingUntil = 0;
+        m_ssAskSupport = -1;
+        m_ssAskOn = false;
+        m_ssAskSentT = 0;
+        m_ssAskId = 0;
+        m_ssAskTold.clear();
+    }
+    VaracWatch::Snapshot va = m_layer ? m_layer->snapshot() : m_varac->snapshot();
+    if (m_layer && varac.held && !m_layer->held()) {
+        // the layer's hold ends when VarAC closes its command connection
+        varac.held = false;
+        m_log("VarAC: hold over (" + varac.reason + "): VarAC closed its connection");
+        varac.reason.clear();
+    }
 
     // who is transmitting
     if (m_ssMsg && !m_ssPtt && now - m_ssLastOffT > m_s.subspaceFrameGapS)
         m_ssMsg = false;   // no next frame came: the message ended without TX.COMPLETE (halted)
+    // [study] a granted Subspace message has the radio until Subspace reports its end
+    // (TX.ASK, ASKING false). Two rules end a grant whose end report did not come:
+    // no key-up and no frame waiting for its key-up (TX.PENDING) subspace_frame_gap_s
+    // after the grant; or, after its key-up, no frame and none waiting for that long.
+    if (m_ssGrantId != 0) {
+        bool frameWaits = m_ssPendingUntil > 0 && now < m_ssPendingUntil;
+        if (!m_ssGrantKeyed && !frameWaits && now - m_ssGrantT > m_s.subspaceFrameGapS)
+            endSubspaceGrant("no key-up followed it");
+        else if (m_ssGrantKeyed && !m_ssPtt && !m_ssMsg && !frameWaits && now - m_ssLastOffT > m_s.subspaceFrameGapS)
+            endSubspaceGrant("the message ended without its end report");
+    }
     // still transmitting for subspace_frame_gap_s after the last PTT off: covers the gap between
     // frames and the 1.4 s between two queued messages (measured 2026-10-29)
-    bool ssTx = m_ssPtt || m_ssMsg || m_ssBusy || now - m_ssLastOffT < m_s.subspaceFrameGapS;
+    bool ssTx = m_ssPtt || m_ssMsg || m_ssBusy || now - m_ssLastOffT < m_s.subspaceFrameGapS ||
+                m_ssGrantId != 0;
     // a frame waiting for its key-up (TX.PENDING) holds the others before Subspace keys
     // (W8UFO 10 Nov: VarAC keyed 185 ms before Subspace's slot; VarAC takes ~1 s to obey
     // its lock), but does not shield Subspace itself: a program already on the air (a VARA
@@ -165,7 +372,9 @@ void Arbiter::tick() {
     // "Ignoring PTT request by the modem"). Counted, VARA's refused attempts held the others
     // for nothing and made VarAC "transmitting", so its hold was neither renewed nor released
     // until VarAC's own 30 s timeout (W8UFO 10 Nov 19:48:45 to 19:49:15).
-    bool vaBurst = !varac.held &&
+    // [study] With the layer every PTT line counts: a held VarAC's VARA is told LISTEN OFF
+    // and VarAC BUSY ON, so a PTT ON while held is a real transmission.
+    bool vaBurst = (m_layer || !varac.held) &&
                    ((va.ptt && now - va.pttT < 60) || (now - va.burstT < m_s.varaBurstHoldS));
     bool vaTx = va.link || vaBurst;
     bool keyed = m_flrig->ptt == 1;
@@ -192,16 +401,39 @@ void Arbiter::tick() {
 
     subspace.connected = m_subspace->up();
     fldigi.connected = m_fldigi->up();
-    varac.connected = !m_varac->path().isEmpty();
+    varac.connected = m_layer ? m_layer->connected() : !m_varac->path().isEmpty();
     for (Program *p : programs()) {
         if (p->connected) { p->seenUp = true; p->downT = 0; }
         else if (p->seenUp && p->downT == 0) p->downT = now;
+        p->waiting = false;
+        p->waitReason.clear();
     }
-    if (varac.connected) m_lever->setLogPath(m_varac->path());
-    m_lever->available();   // refreshes its status text
+    if (m_lever) {
+        if (varac.connected) m_lever->setLogPath(m_varac->path());
+        m_lever->available();   // refreshes its status text
+    }
     subspace.transmitting = ssTx;
     fldigi.transmitting = flTx;
     varac.transmitting = vaTx;
+
+    // [study] grants. A program that asks gets the radio when no other program has it
+    // (or the operator released it in this window), one at a time, the one that asked
+    // first before the other (chosen). VarAC does not ask: a start command it sends
+    // while the radio is free is already in m_sources here (the layer reports it at once).
+    int flWait = m_fldigi->asks() ? m_fldigi->waiting() : 0;
+    if (flWait != m_flWaitSerial) {
+        m_flWaitSerial = flWait;
+        m_flWaitT = now;
+        m_flWaitTold.clear();
+        if (flWait != 0) m_log(QString("fldigi: asks to transmit (start %1)").arg(flWait));
+    }
+    if (m_ssAskId != 0 && (m_flWaitSerial == 0 || m_ssAskT <= m_flWaitT)) {
+        considerSubspace(now);
+        considerFldigi(now);
+    } else {
+        considerFldigi(now);
+        considerSubspace(now);
+    }
 
     bool busy = false;
     for (const QString &r : Reason::ORDER) busy = busy || m_sources[r];
@@ -217,15 +449,16 @@ void Arbiter::tick() {
     }
 
     for (Program *p : programs()) {
-        QStringList others;
-        for (const QString &r : Reason::ORDER)
-            if (m_sources[r] && !p->own.contains(r)) others << r;
-        bool want = !others.isEmpty() && !p->transmitting && !p->overridden && p->enabled;
+        QStringList const others = othersThan(*p);
+        // [study] a program that asks waits inside itself for its grant: its switch is
+        // not thrown (a hold standing from before it asked is released here)
+        bool want = !others.isEmpty() && !p->transmitting && !p->overridden && p->enabled && !asks(*p);
         apply(*p, want, others.isEmpty() ? QString() : others.first(), now);
     }
     // [unkey-block] VarAC's lock holds its keys but not VARA's un-keys: while VarAC is held,
-    // flrig-subspace ignores un-keys with VarAC's label (renewed; it lapses by itself)
-    m_flrig->setUnkeyBlock(varac.held);
+    // flrig-subspace ignores un-keys with VarAC's label (renewed; it lapses by itself).
+    // [study] Not with the layer: BUSY ON and LISTEN OFF keep VARA from keying at all.
+    m_flrig->setUnkeyBlock(!m_layer && varac.held);
 
     // the dial is never arbitrated, only logged, once per change. Subspace's RIG.FREQ may come
     // after the dial reading (W1NEM 12 Nov 21:00:29: read first, logged "program unknown"),
@@ -245,18 +478,30 @@ void Arbiter::tick() {
         subspace.status += subspace.seenUp
             ? "  since " + clockText(subspace.downT) + " (it was connected before: Subspace closed or stopped answering)"
             : "  (Subspace: Settings > Reporting: TCP API enabled, Accept TCP requests)";
+    else if (m_s.askSubspace && subspace.enabled && m_ssAskSupport == 1)
+        subspace.status += "; asks before it transmits";
+    else if (m_s.askSubspace && subspace.enabled && m_ssAskSupport == 0)
+        subspace.status += "; no ask / grant in this Subspace: held with its TX switch";
     fldigi.status = m_fldigi->up() ? "connected"
         : fldigi.seenUp ? "not answering since " + clockText(fldigi.downT) + "  (it answered before: fldigi may be frozen)"
                         : "not answering  (fldigi: Configure > Misc > TCP-IP sessions > XML: address 127.0.0.1, port 7362)";
-    QString lever = m_lever->status();
-    if (lever.startsWith("cluster lock: VarAC.db not found"))
-        lever += "  (VarAC: Settings > Cluster enabled, PTT Lock ON, restart VarAC)";
-    varac.status = m_varac->status() + "; " + lever;
-    if (varac.held && m_flrig->blockStanding()) varac.status += "; un-keys blocked at flrig";
-    else if (m_flrig->blockSupport() == 0) varac.status += "; un-key block not available with this flrig";
+    if (m_fldigi->up() && m_fldigi->asks()) fldigi.status += "; asks before it transmits";
+    else if (m_fldigi->up() && m_fldigi->askWanted() && m_fldigi->askSupport() == 0)
+        fldigi.status += "; no ask / grant in this fldigi: held with receive-only";
+    if (m_layer) {
+        varac.status = m_layer->status();
+    } else {
+        QString lever = m_lever->status();
+        if (lever.startsWith("cluster lock: VarAC.db not found"))
+            lever += "  (VarAC: Settings > Cluster enabled, PTT Lock ON, restart VarAC)";
+        varac.status = m_varac->status() + "; " + lever;
+        if (varac.held && m_flrig->blockStanding()) varac.status += "; un-keys blocked at flrig";
+        else if (m_flrig->blockSupport() == 0) varac.status += "; un-key block not available with this flrig";
+    }
 }
 
 bool Arbiter::setupComplete() const {
+    if (m_layer) return m_subspace->up() && m_fldigi->up() && m_layer->connected();
     return m_subspace->up() && m_fldigi->up() && !m_varac->path().isEmpty() &&
            m_lever->status() == "cluster lock ready";
 }
@@ -271,8 +516,8 @@ QString Arbiter::setupText() const {
     const QString varacUsual = "<Wine prefix>/drive_c/VarAC/VarAC.ini";
 #endif
     QString varacFiles;
-    QString const logDir = m_varac->path().isEmpty() ? QString()
-                                                     : QFileInfo(m_varac->path()).absolutePath();
+    QString const logDir = !m_varac || m_varac->path().isEmpty() ? QString()
+                                                                 : QFileInfo(m_varac->path()).absolutePath();
     for (const QString &f : VaracWatch::settingsFiles(logDir))
         varacFiles += "    " + QDir::toNativeSeparators(f) + "\n";
     if (varacFiles.isEmpty())
@@ -294,11 +539,26 @@ QString Arbiter::setupText() const {
         "fldigi\n"
         "  Nothing: its XML-RPC server is always on. To check it:\n"
         "  Configure > Misc > TCP-IP sessions > XML: address 127.0.0.1,\n"
-        "  port 7362 (the defaults; Default, then Restart, puts them back).\n\n"
+        "  port 7362 (the defaults; Default, then Restart, puts them back).\n\n") +
+        (m_layer ? QString(
+        "VarAC and VARA  (study: varac/lever = layer)\n"
+        "  VarAC reaches VARA through the Arbiter, and only while the Arbiter\n"
+        "  runs. VARA is moved to command port %1 (data %2) and KISS port %3\n"
+        "  (VARA: Settings > VARA Setup). VarAC keeps its usual ports %4 and\n"
+        "  %5 and must not start VARA itself: when VarAC starts VARA it first\n"
+        "  writes its own ports into VARA.ini (measured 2026-11-20). In VarAC's\n"
+        "  settings file, with VarAC closed: VarahfLaunchOnModemConnect=OFF\n"
+        "  (not yet tried). Start order: VARA, the Arbiter, VarAC.\n"
+        "  Neither \"Log VARA commands\" nor the cluster PTT lock is used.\n"
+        "  In VarAC's settings file, with VarAC closed: under [RIG_CONTROL]\n")
+            .arg(m_s.layerVaraCmdPort).arg(m_s.layerVaraCmdPort + 1).arg(m_s.layerVaraKissPort)
+            .arg(m_s.layerCmdPort).arg(m_s.layerKissPort)
+        : QStringLiteral(
         "VarAC\n"
         "  Settings: \"Log VARA commands\" on.\n"
         "  Settings > Cluster: enabled, \"PTT Lock\" on. Restart VarAC.\n"
-        "  In VarAC's settings file, with VarAC closed: under [RIG_CONTROL]\n"
+        "  In VarAC's settings file, with VarAC closed: under [RIG_CONTROL]\n")) +
+        QStringLiteral(
         "  set SafetyPTTOffEveryMinute=OFF (VarAC has no screen for it). ON,\n"
         "  VarAC un-keys the radio once a minute, cutting off whichever\n"
         "  program is transmitting. VarAC's settings files on this PC\n"
@@ -312,9 +572,17 @@ QString Arbiter::setupText() const {
         "  Nothing. Its settings file, only for exceptions:\n") + arbLines +
         QStringLiteral(
         "\n"
-        "Then: Subspace shows \"TX disabled by ...\" while held, fldigi goes\n"
-        "receive-only, VarAC shows \"PTT is disabled\". Close the Arbiter and\n"
-        "every program works as before.");
+        "Then: a Subspace or fldigi-subspace of the study branch waits with its\n"
+        "own transmission until the Arbiter grants it, and says so. Any other\n"
+        "Subspace shows \"TX disabled by ...\" while held, any other fldigi goes\n"
+        "receive-only. ") +
+        (m_layer ? QStringLiteral(
+        "VarAC shows the channel busy while held. Close the\n"
+        "Arbiter: Subspace and fldigi work as before; VarAC has no VARA until\n"
+        "the Arbiter runs again.")
+                 : QStringLiteral(
+        "VarAC shows \"PTT is disabled\". Close the Arbiter and\n"
+        "every program works as before."));
 }
 
 bool Arbiter::dialFromSubspace() const {
@@ -378,7 +646,7 @@ bool Arbiter::hold(Program &p, const QString &reason) {
         return true;
     }
     if (&p == &fldigi) return m_fldigi->hold();
-    if (&p == &varac) return m_lever->hold();
+    if (&p == &varac) return m_layer ? m_layer->hold() : m_lever->hold();
     return false;
 }
 
@@ -390,10 +658,10 @@ void Arbiter::renew(Program &p, const QString &reason) {
             if (q.value("OK").toBool() && (q.value("CHANGED").toBool() || q.value("REMOTE").toBool()))
                 m_ssHoldOwned = true;
         });
-    } else if (&p == &varac) {
+    } else if (&p == &varac && m_lever) {
         m_lever->renew();
     }
-    // fldigi: rx_only has no lease; nothing to renew
+    // fldigi: rx_only has no lease; nothing to renew. Nor has the layer's hold.
 }
 
 void Arbiter::release(Program &p) {
@@ -404,7 +672,8 @@ void Arbiter::release(Program &p) {
     } else if (&p == &fldigi) {
         m_fldigi->release(m_stopped);
     } else if (&p == &varac) {
-        m_lever->release();
+        if (m_layer) m_layer->release();
+        else m_lever->release();
     }
 }
 
@@ -421,6 +690,9 @@ void Arbiter::operatorRelease(Program &p) {
 void Arbiter::setEnabled(Program &p, bool on) {
     p.enabled = on;
     m_log(p.name + ": hold " + (on ? "enabled" : "disabled") + " by the operator");
+    // [study] a program whose hold is switched off is not asked to ask either (Subspace:
+    // subspaceAsk() at the next tick)
+    if (&p == &fldigi) m_fldigi->setAsking(on && m_s.askFldigi);
     if (!on && p.held) {
         release(p);
         p.held = false;

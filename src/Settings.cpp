@@ -48,6 +48,17 @@ Settings Settings::load(const QString &iniPath) {
     s.unkeyBlockLabel = str("varac/unkey_block_label", s.unkeyBlockLabel);
     s.unkeyBlockMs = int(num("varac/unkey_block_ms", s.unkeyBlockMs));
     s.unkeyBlockRenewS = num("varac/unkey_block_renew_s", s.unkeyBlockRenewS);
+    s.layerCmdPort = int(num("varac/layer_port", s.layerCmdPort));
+    s.layerKissPort = int(num("varac/layer_kiss_port", s.layerKissPort));
+    s.layerVaraCmdPort = int(num("varac/layer_vara_port", s.layerVaraCmdPort));
+    s.layerVaraKissPort = int(num("varac/layer_vara_kiss_port", s.layerVaraKissPort));
+    s.layerVaraWaitS = num("varac/layer_vara_wait_s", s.layerVaraWaitS);
+    s.layerLogLines = onOff(ini.value("varac/layer_log_lines"), s.layerLogLines);
+    s.askSubspace = onOff(ini.value("ask/subspace"), s.askSubspace);
+    s.askFldigi = onOff(ini.value("ask/fldigi"), s.askFldigi);
+    s.fldigiAskLeaseMs = int(num("ask/fldigi_lease_ms", s.fldigiAskLeaseMs));
+    s.subspaceAskLeaseMs = int(num("ask/subspace_lease_ms", s.subspaceAskLeaseMs));
+    s.subspaceAskRenewS = num("ask/subspace_renew_s", s.subspaceAskRenewS);
     s.logFile = str("log/file", s.logFile);
     if (s.pollMs < 50) s.pollMs = 50;
     return s;
@@ -126,6 +137,31 @@ QString Settings::defaultIniText() {
         "unkey_block_ms = 15000\n"
         "# unkey_block_renew_s: how often it is renewed while VarAC is held. chosen.\n"
         "unkey_block_renew_s = 5\n"
+        "# [study] lever = layer: VarAC reaches VARA through the arbiter. VarAC connects to\n"
+        "# layer_port, layer_port + 1 and layer_kiss_port (VARA HF's usual 8300 / 8301 /\n"
+        "# 8100, so VarAC needs no change); the arbiter connects on to VARA, which is moved\n"
+        "# to layer_vara_port (+ 1) and layer_vara_kiss_port in VARA.ini. While VarAC is\n"
+        "# held it is told BUSY ON and VARA is told LISTEN OFF (measured with VarAC 16.1.8\n"
+        "# and VARA HF 4.9.0, 2026-11-20). No cluster lock and no un-key block are used.\n"
+        "# With lever = layer VarAC reaches VARA only while the arbiter runs.\n"
+        "layer_port = 8300\nlayer_kiss_port = 8100\n"
+        "layer_vara_port = 8310\nlayer_vara_kiss_port = 8110\n"
+        "# layer_vara_wait_s: how long VarAC's connection waits for VARA to listen. chosen;\n"
+        "# VARA under Wine took 12 to 20 s (measured).\n"
+        "layer_vara_wait_s = 120\n"
+        "# layer_log_lines: every command line between VarAC and VARA in the log.\n"
+        "layer_log_lines = on\n"
+        "\n[ask]\n"
+        "# [study] A Subspace or fldigi-subspace of the study branch asks the arbiter before\n"
+        "# it transmits and waits, inside the program, for the grant; such a program is not\n"
+        "# held with its switch. A program without it is held as before. off = never asked\n"
+        "# for, held as before.\n"
+        "subspace = on\nfldigi = on\n"
+        "# fldigi_lease_ms: each state query (every poll_ms) keeps fldigi asking this long;\n"
+        "# a stopped arbiter's asking ends within it and fldigi starts as before. chosen.\n"
+        "fldigi_lease_ms = 3000\n"
+        "# subspace_lease_ms, subspace_renew_s: the same for Subspace (TX.SET_ASK). chosen.\n"
+        "subspace_lease_ms = 15000\nsubspace_renew_s = 5\n"
         "\n[log]\n"
         "# file: relative to this ini's folder (or to the data folder without an ini).\n"
         "file = arbiter.log\n");

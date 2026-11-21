@@ -4,7 +4,8 @@ project(Arbiter VERSION 1.0.8 LANGUAGES CXX)
 # The version string the program shows and the packages carry. CI passes the
 # tag (v1.0.0 -> 1.0.0) or a branch build (1.0.0-dev.<sha>); a plain build
 # uses the project version.
-set(ARBITER_VERSION_STRING "${PROJECT_VERSION}" CACHE STRING "version shown by the program")
+# [study] branch study-ask-grant: every build from it says so.
+set(ARBITER_VERSION_STRING "${PROJECT_VERSION}-study1" CACHE STRING "version shown by the program")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -32,6 +33,7 @@ set(SOURCES
   src/SubspaceLink.cpp
   src/VaracWatch.cpp
   src/VaracLever.cpp
+  src/VaraLayer.cpp
   src/Arbiter.cpp
   src/MainWindow.cpp
   src/Settings.h
@@ -42,6 +44,7 @@ set(SOURCES
   src/SubspaceLink.h
   src/VaracWatch.h
   src/VaracLever.h
+  src/VaraLayer.h
   src/Arbiter.h
   src/MainWindow.h
 )

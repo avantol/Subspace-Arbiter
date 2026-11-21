@@ -121,7 +121,12 @@ class FakeFlrig:
 
 
 class FakeFldigi:
-    def __init__(self, flrig=None):
+    """has_ask=True: the fldigi-subspace of branch study-ask-grant. main.get_tx_ask(lease_ms)
+    answers "<state> <waiting> <granted>" and keeps fldigi asking for lease_ms; while it
+    asks, start() (the T/R button, a macro) waits for main.tx_grant(serial), or for the
+    lease to lapse. has_ask=False: neither method exists (a fault), as in every other fldigi."""
+
+    def __init__(self, flrig=None, has_ask=False):
         self.port = free_port()
         self.flrig = flrig
         self.state = "RX"
@@ -129,13 +134,74 @@ class FakeFldigi:
         self.refuse_rx_tx = 0   # answer this many rx_tx requests with a fault
         self.fail_state = 0     # answer this many get_trx_state requests with a fault
         self.calls = []
+        self.ask_until = 0.0    # asking lasts until then
+        self.serial = 0
+        self.waiting = 0        # the serial of the start that waits
+        self.granted = 0        # the serial of the granted start, until it ends
+        self.starts = []        # (serial, "granted" / "lease lapsed" / "not asked", time)
+        self.closed = False
         self.srv = _Rpc(self.port)
         self.srv.register_function(self._get_trx_state, "main.get_trx_state")
         self.srv.register_function(self._rx_only, "main.rx_only")
         self.srv.register_function(self._rx_tx, "main.rx_tx")
         self.srv.register_function(self._tx, "main.tx")
         self.srv.register_function(self._rx, "main.rx")
+        if has_ask:
+            self.srv.register_function(self._get_tx_ask, "main.get_tx_ask")
+            self.srv.register_function(self._tx_grant, "main.tx_grant")
+            threading.Thread(target=self._ask_loop, daemon=True).start()
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    # -- ask / grant (study) ------------------------------------------------------
+    def _get_tx_ask(self, lease_ms):
+        self.ask_until = time.time() + int(lease_ms) / 1000.0
+        return "%s %d %d" % (self.state, self.waiting, self.granted)
+
+    def _tx_grant(self, serial):
+        self.calls.append(("tx_grant", time.time(), int(serial)))
+        if self.waiting == 0 or int(serial) != self.waiting:
+            return "not waiting"
+        self._go("granted")
+        return "granted"
+
+    def _go(self, how):
+        serial, self.waiting = self.waiting, 0
+        self.granted = serial if how == "granted" else 0
+        self.starts.append((serial, how, time.time()))
+        self.state = "TX"
+        if self.flrig:
+            self.flrig.key(1, "fldigi")
+
+    def _ask_loop(self):
+        while not self.closed:
+            time.sleep(0.02)
+            if self.waiting and time.time() > self.ask_until:
+                self._go("lease lapsed")     # nobody renews the asking: the start goes ahead
+
+    def start(self):
+        """The T/R button or a macro. Returns "refused" (rx_only), "waiting" or "tx"."""
+        if self.rx_only:
+            self.calls.append(("tx_refused", time.time()))
+            return "refused"
+        if self.state == "TX":
+            return "tx"
+        if time.time() < self.ask_until:
+            if not self.waiting:             # a repeated start is the same start
+                self.serial += 1
+                self.waiting = self.serial
+            return "waiting"
+        self.serial += 1
+        self.starts.append((self.serial, "not asked", time.time()))
+        self.state = "TX"
+        if self.flrig:
+            self.flrig.key(1, "fldigi")
+        return "tx"
+
+    def end(self):
+        """The transmission is over, or the waiting start is given up."""
+        self.waiting = 0
+        self.granted = 0
+        self._rx()
 
     def _get_trx_state(self):
         if self.fail_state > 0:
@@ -177,18 +243,30 @@ class FakeFldigi:
         return ""
 
     def close(self):
+        self.closed = True
         self.srv.shutdown()
         self.srv.server_close()
 
 
 class FakeSubspace:
-    """Enough of the Subspace TCP API for the arbiter, with the Build 517 TX enable rules."""
+    """Enough of the Subspace TCP API for the arbiter, with the Build 517 TX enable rules.
+    has_ask=True: the Subspace of branch study-ask-grant (TX.SET_ASK, TX.ASK, TX.GRANT);
+    send() is the operator's Send with the wait for the grant at the key-up.
+    has_ask=False: TX.SET_ASK and TX.GRANT get no answer, as any request type the real
+    program does not know."""
 
-    def __init__(self, flrig=None, lease_s=300.0, max_connections=1):
+    def __init__(self, flrig=None, lease_s=300.0, max_connections=1, has_ask=False):
         self.port = free_port()
         self.flrig = flrig
         self.lease_s = lease_s
         self.max_connections = max_connections
+        self.has_ask = has_ask
+        self.ask_until = 0.0     # asking lasts until then
+        self.ask_counter = 0
+        self.ask_id = 0          # the message that waits for its grant
+        self.granted_id = 0      # the granted message, until it is over
+        self.wait_reasons = []   # what the arbiter said the message waits for
+        self.sends = []          # (ask_id, "granted" / "lease lapsed" / "not asked", time)
         self.tx_enabled = True
         self.remote = False
         self.reason = ""
@@ -264,6 +342,21 @@ class FakeSubspace:
                 "_ID": rid, "ENABLED": self.tx_enabled, "REMOTE": self.remote, "REASON": self.reason}})
         elif t == "TX.SET_ENABLED":
             self._set_enabled(h, rid, p)
+        elif t in ("TX.SET_ASK", "TX.GRANT"):
+            if not self.has_ask:
+                return                       # the real program gives no answer to a type it does not know
+            if t == "TX.SET_ASK":
+                on = bool(p.get("ASK"))
+                self.ask_until = time.time() + int(p.get("LEASE_MS", 0)) / 1000.0 if on else 0.0
+                self._send_to(h, {"type": "TX.ASKING", "params": {"_ID": rid, "OK": True, "ASK": on}})
+            else:
+                aid = int(p.get("ASK_ID", 0))
+                ok = aid != 0 and aid == self.ask_id
+                if ok and p.get("GRANT"):
+                    self.granted_id = aid
+                elif ok:
+                    self.wait_reasons.append(str(p.get("REASON", "")))
+                self._send_to(h, {"type": "TX.GRANT", "params": {"_ID": rid, "OK": ok, "ASK_ID": aid}})
         else:
             self._send_to(h, {"type": "API.ERROR", "value": "unknown " + t, "params": {"_ID": rid}})
 
@@ -317,6 +410,7 @@ class FakeSubspace:
             self.refused_sends += 1
             return False
         self.transmitting = True
+        self.dropped = False
         for i in range(frames):
             if not self.transmitting:
                 return False
@@ -324,6 +418,8 @@ class FakeSubspace:
                 self.flrig.key(1, "Hamlib")
             self.push("RIG.PTT", "on", PTT=True, UTC=int(time.time() * 1000))
             time.sleep(frame_s)
+            if self.dropped:
+                return False                 # the program stopped during the frame (drop())
             if i == frames - 1:
                 self.push("TX.COMPLETE", text, SUBMODE=0, UTC=int(time.time() * 1000))
             if self.flrig:
@@ -334,6 +430,71 @@ class FakeSubspace:
         self.transmitting = False
         self.sent.append(text)
         return True
+
+    def drop(self):
+        """Subspace stops without a word (a crash) and is started again: the connection
+        closes, the radio un-keys, nothing of the asking is left."""
+        with self.lock:
+            cs = list(self.clients)
+        self.transmitting = False
+        self.dropped = True
+        self.ask_until = 0.0
+        self.ask_id = 0
+        self.granted_id = 0
+        for h in cs:
+            try:
+                h.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        if self.flrig:
+            self.flrig.key(0, "Hamlib")
+
+    def send(self, frames=1, frame_s=0.5, gap_s=0.3, text="WM8Q: K7RIE HELLO", give_up_s=None,
+             silent_after_grant=False):
+        """The operator's Send in the study Subspace. While the arbiter's asking stands, the
+        message's first frame waits for TX.GRANT; a lapsed asking lets it go (as before the
+        study); give_up_s = the operator halts the waiting message after that long;
+        silent_after_grant = the grant is taken and nothing follows (no key-up, no report).
+        Returns "refused", "given up", or how it went out."""
+        if not self.tx_enabled:
+            self.refused_sends += 1
+            return "refused"
+        how = "not asked"
+        aid = 0
+        if self.has_ask and time.time() < self.ask_until:
+            self.ask_counter += 1
+            aid = self.ask_id = self.ask_counter
+            t0 = time.time()
+            self.push("TX.ASK", ASK_ID=aid, ASKING=True, KEYUP_IN_MS=300)
+            while True:
+                if self.granted_id == aid:
+                    how = "granted"
+                    break
+                if time.time() > self.ask_until:
+                    how = "lease lapsed"
+                    break
+                if give_up_s is not None and time.time() - t0 > give_up_s:
+                    self.ask_id = 0
+                    self.push("TX.ASK", ASK_ID=aid, ASKING=False)
+                    return "given up"
+                if not self.tx_enabled:
+                    self.ask_id = 0
+                    self.push("TX.ASK", ASK_ID=aid, ASKING=False)
+                    self.refused_sends += 1
+                    return "refused"
+                time.sleep(0.01)
+            self.ask_id = 0
+            if how != "granted":
+                self.push("TX.ASK", ASK_ID=aid, ASKING=False)
+        self.sends.append((aid, how, time.time()))
+        if silent_after_grant and how == "granted":
+            self.granted_id = 0
+            return how
+        done = self.transmit(frames=frames, frame_s=frame_s, gap_s=gap_s, text=text)
+        if how == "granted" and (done or self.granted_id == aid):
+            self.granted_id = 0
+            self.push("TX.ASK", ASK_ID=aid, ASKING=False)
+        return how
 
     def pending(self, keyup_in_ms=None):
         """A slotted frame waits for its key-up (keyup_in_ms from now), or stops waiting (None).
@@ -385,3 +546,138 @@ class VaracLog:
         stamp = time.strftime("%d/%m/%Y %H:%M:%S", lt)
         with open(self.path, "a", encoding="utf-8") as f:
             f.write("%s - %s\n" % (stamp, kind))
+
+
+def free_pair():
+    """Two free ports next to each other (VARA: command port, data port = command + 1)."""
+    while True:
+        p = free_port()
+        s = socket.socket()
+        try:
+            s.bind(("127.0.0.1", p + 1))
+        except OSError:
+            continue
+        finally:
+            s.close()
+        return p
+
+
+class _Lines:
+    """One TCP connection read as lines that end with CR (VARA's command port)."""
+
+    def __init__(self, sock, answer=None):
+        self.sock = sock
+        self.lines = []          # (text, time)
+        self.raw = b""
+        self.answer = answer
+        self.open = True
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        buf = b""
+        while True:
+            try:
+                data = self.sock.recv(4096)
+            except OSError:
+                data = b""
+            if not data:
+                self.open = False
+                return
+            self.raw += data
+            buf += data
+            while b"\r" in buf:
+                line, buf = buf.split(b"\r", 1)
+                text = line.decode("latin-1").strip()
+                if text:
+                    self.lines.append((text, time.time()))
+                    if self.answer:
+                        self.say(self.answer(text))
+
+    def say(self, text):
+        self.sock.sendall(text.encode("latin-1") + b"\r")
+
+    def got(self, text):
+        return [t for t, _ in self.lines if t == text]
+
+    def close(self):
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.sock.close()
+
+
+class FakeVara:
+    """The VARA modem's three ports for the layer (varac/lever = layer): command, data
+    (command + 1) and KISS. Every command line is answered with OK, as VARA does; what
+    VARA does on the air (PENDING, PTT ON, CONNECTED ...) the scenario says with say()."""
+
+    def __init__(self):
+        self.cmd_port = free_pair()
+        self.kiss_port = free_port()
+        self.cmd = None          # the layer's command connection (a _Lines)
+        self.kiss = None
+        self.closed = False
+        self.servers = []
+        for port, name in ((self.cmd_port, "cmd"), (self.cmd_port + 1, "data"), (self.kiss_port, "kiss")):
+            srv = socket.socket()
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", port))
+            srv.listen(2)
+            self.servers.append(srv)
+            threading.Thread(target=self._accept, args=(srv, name), daemon=True).start()
+
+    def _accept(self, srv, name):
+        while not self.closed:
+            try:
+                sock, _ = srv.accept()
+            except OSError:
+                return
+            if name == "cmd":
+                self.cmd = _Lines(sock, answer=lambda text: "OK")
+            elif name == "kiss":
+                self.kiss = _Lines(sock)
+            else:
+                self.data = _Lines(sock)
+
+    def say(self, text):
+        self.cmd.say(text)
+
+    def got(self, text):
+        return self.cmd.got(text) if self.cmd else []
+
+    def close(self):
+        self.closed = True
+        for srv in self.servers:
+            srv.close()
+        for c in (self.cmd, self.kiss, getattr(self, "data", None)):
+            if c:
+                c.close()
+
+
+class FakeVarac:
+    """VarAC's three connections to the modem, made to the layer's ports, with the two
+    LISTEN lines VarAC sends when it connects."""
+
+    def __init__(self, cmd_port, kiss_port):
+        self.cmd = _Lines(self._dial(cmd_port))
+        self.data = _Lines(self._dial(cmd_port + 1))
+        self.kiss = _Lines(self._dial(kiss_port))
+        self.cmd.say("LISTEN ON")
+        self.cmd.say("LISTEN CQ")
+
+    @staticmethod
+    def _dial(port):
+        sock = socket.create_connection(("127.0.0.1", port), 3.0)
+        sock.settimeout(None)
+        return sock
+
+    def say(self, text):
+        self.cmd.say(text)
+
+    def got(self, text):
+        return self.cmd.got(text)
+
+    def close(self):
+        for c in (self.cmd, self.data, self.kiss):
+            c.close()

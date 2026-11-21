@@ -32,12 +32,25 @@ struct Settings {
     double reconnectS = 5;         // chosen
     // [varac]
     QString varacLogPath;          // blank = found the way CAT Watch finds it
-    QString varacLever = "cluster_lock";  // or none = observe only
+    QString varacLever = "cluster_lock";  // or none = observe only, or layer = [study] VaraLayer
     QString varacDbPath;           // blank = VarAC.db beside the command log
     double varacRenewS = 10;       // measured: VarAC drops a lock 30 s after its last keepalive
     QString unkeyBlockLabel = "XML-RPC.NET";  // measured 2026-11-12: VarAC's HTTP User-Agent
     int unkeyBlockMs = 15000;      // chosen: flrig-subspace's cap; a stopped arbiter's block lapses within it
     double unkeyBlockRenewS = 5;   // chosen: three renewals inside one block
+    // [study] the layer between VarAC and VARA (varac/lever = layer)
+    int layerCmdPort = 8300;       // VARA HF's usual command port (data = +1): VarAC needs no change
+    int layerKissPort = 8100;      // VARA HF's usual KISS port
+    int layerVaraCmdPort = 8310;   // chosen: where VARA is moved to in VARA.ini (data = +1)
+    int layerVaraKissPort = 8110;  // chosen
+    double layerVaraWaitS = 120;   // chosen: VARA under Wine took 12 to 20 s to listen (measured)
+    bool layerLogLines = true;     // every command line between VarAC and VARA goes to the log
+    // [study] ask / grant
+    bool askSubspace = true;
+    bool askFldigi = true;
+    int fldigiAskLeaseMs = 3000;       // chosen: 15 state queries inside one lease
+    int subspaceAskLeaseMs = 15000;    // chosen: three renewals inside one lease
+    double subspaceAskRenewS = 5;      // chosen
     // [log]
     QString logFile = "arbiter.log";
 

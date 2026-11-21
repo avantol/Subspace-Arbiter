@@ -29,6 +29,9 @@ public:
     QString status() const { return m_status; }
     void close();
 
+signals:
+    void eventQueued();   // [study] an event is waiting in takeEvents()
+
 private:
     static constexpr int KEEPALIVE_MS = 10000;   // chosen
     void tryConnect();

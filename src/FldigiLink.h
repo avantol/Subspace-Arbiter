@@ -17,14 +17,34 @@ public:
     FldigiLink(const Settings &s, Log &log, QObject *parent = nullptr);
     void poll();
     bool up() const { return m_link.up(); }
-    bool transmitting() const { return m_state == "TX"; }
+    // [study] a granted start counts from the grant, before fldigi reports TX
+    bool transmitting() const { return m_state == "TX" || m_granted != 0 || m_grantSent != 0; }
     QString state() const { return m_state; }   // "TX" / "RX" / "" (not answering)
     bool held() const { return m_held; }
     bool hold();      // only while fldigi is in RX: rx_only aborts an over in progress
     bool release(bool closing = false);   // rx_tx; closing = the arbiter's exit path
 
+    // [study] ask / grant (fldigi-subspace, branch study-ask-grant). The state query
+    // main.get_tx_ask(lease_ms) replaces main.get_trx_state: it answers
+    // "<state> <waiting> <granted>" and each one renews fldigi's asking for lease_ms,
+    // so a stopped arbiter's asking ends by itself and fldigi starts as before. While
+    // fldigi asks, a start waits inside fldigi (text kept) until main.tx_grant(serial).
+    // An fldigi without the method answers with a fault: said once, held with
+    // receive-only as before, asked again when fldigi reconnects.
+    bool asks() const { return m_askSupport == 1 && m_askWanted; }
+    void setAsking(bool on) { m_askWanted = on; }   // off: no more renewals, fldigi's asking lapses
+    bool askWanted() const { return m_askWanted; }
+    int askSupport() const { return m_askSupport; }  // -1 not known yet, 0 not in this fldigi, 1 yes
+    int waiting() const { return m_grantSent ? 0 : m_waiting; }   // serial of a start that waits, 0 = none
+    int granted() const { return m_granted; }
+    void grant(int serial);
+
+signals:
+    void changed();   // a start began to wait, or a granted one ended
+
 private:
-    bool sendCmd(const QString &cmd);
+    bool sendCmd(const QString &cmd, const QVariantList &args = {});
+    void askAnswer(bool ok, const QVariant &v);
     void rxTxResult(bool ok);
     void mark(bool on);             // [fail-open] the "rx_only sent, no rx_tx accepted since" marker
 
@@ -33,6 +53,14 @@ private:
     QString m_host;
     int m_port, m_timeoutMs;
     QString m_state, m_pending;
+    int m_askLeaseMs;
+    bool m_askWanted;
+    int m_askSupport = -1;
+    int m_waiting = 0, m_granted = 0;
+    int m_grantSent = 0;            // main.tx_grant sent, the state query has not shown it yet
+    int m_grantQueued = 0;          // main.tx_grant waits for the request in flight
+    bool m_grantAnswered = false;
+    bool m_wasUp = false;
     bool m_held = false;
     bool m_releaseFailed = false;   // the last rx_tx was not accepted (logged once)
     QString m_marker;               // [fail-open] beside the log file

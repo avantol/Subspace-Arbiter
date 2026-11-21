@@ -19,6 +19,7 @@ class FldigiLink;
 class SubspaceLink;
 class VaracWatch;
 class VaracLever;
+class VaraLayer;
 
 // Reasons shown inside the held program (Subspace status bar: "TX disabled by <reason>")
 namespace Reason {
@@ -44,6 +45,9 @@ struct Program {
     bool skipLogged = false;   // "not held (not answering)" said this busy period
     QString status;
     QStringList own;           // the reasons that are this program's own transmitting
+    bool leased = true;        // its hold is renewed (the window counts down to the renewal)
+    bool waiting = false;      // [study] it asked to transmit and waits for its grant
+    QString waitReason;        // [study] what it waits for
 };
 
 class Arbiter : public QObject {
@@ -66,9 +70,22 @@ public:
     Log &log() { return m_log; }
 
 private:
-    void tick();
+    void tick();                       // asks the programs for their state, then decide()
+    // Who has the radio, who is granted, who is held. Run by every tick and, [study], at
+    // once when a program reports a change (a start that waits, a transmission over, a
+    // VarAC start command), so a grant does not wait for the next tick.
+    void decide();
+    void decideSoon();
     void subspaceEvents(double now);
     void subspaceStatePoll(double now);
+    // [study] ask / grant
+    bool asks(const Program &p) const;         // it asks before it transmits: not held with its switch
+    QStringList othersThan(const Program &p) const;
+    QStringList inTheWayOf(const Program &p) const;   // othersThan, and a radio that is still keyed
+    void subspaceAsk(double now);              // TX.SET_ASK, renewed
+    void considerSubspace(double now);
+    void considerFldigi(double now);
+    void endSubspaceGrant(const QString &why);
     void apply(Program &p, bool want, const QString &reason, double now);
     bool hold(Program &p, const QString &reason);
     void renew(Program &p, const QString &reason);
@@ -83,10 +100,32 @@ private:
     FlrigWatch *m_flrig;
     FldigiLink *m_fldigi;
     SubspaceLink *m_subspace;
-    VaracWatch *m_varac;
-    VaracLever *m_lever;
+    // varac/lever = layer: m_layer, and neither the log watch nor the cluster lock;
+    // any other lever: the log watch and the lever, and no layer
+    VaracWatch *m_varac = nullptr;
+    VaracLever *m_lever = nullptr;
+    VaraLayer *m_layer = nullptr;
     QTimer m_tick;
     bool m_stopped = false;
+    bool m_decideQueued = false;
+
+    // [study] ask / grant, Subspace. TX.SET_ASK {ASK, LEASE_MS} switches Subspace's asking
+    // on for one lease; Subspace then reports TX.ASK {ASK_ID, ASKING} when a message's
+    // first frame waits, and keys only after TX.GRANT {ASK_ID, GRANT: true}. One message
+    // is granted at a time; TX.ASK {ASKING: false} ends the ask or the granted message.
+    int m_ssAskSupport = -1;        // -1 not known yet, 0 this Subspace does not answer TX.SET_ASK, 1 yes
+    bool m_ssAskOn = false;         // TX.SET_ASK {ASK: true} was sent and not taken back
+    double m_ssAskSentT = 0;
+    qint64 m_ssAskId = 0;           // the message that waits for a grant (0 = none)
+    double m_ssAskT = 0;            // when it asked
+    QString m_ssAskTold;            // the reason last told to the waiting Subspace
+    qint64 m_ssGrantId = 0;         // the granted message (0 = none)
+    double m_ssGrantT = 0;
+    bool m_ssGrantKeyed = false;    // its first PTT on was seen
+    // [study] ask / grant, fldigi (FldigiLink carries the protocol)
+    int m_flWaitSerial = 0;         // the start that waits for a grant (0 = none)
+    double m_flWaitT = 0;
+    QString m_flWaitTold;
 
     // Subspace message tracking (nothing pushed spans the gap between frames)
     bool m_ssPtt = false, m_ssMsg = false, m_ssBusy = false, m_ssHoldOwned = false;

@@ -92,6 +92,7 @@ void SubspaceLink::handleLine(const QByteArray &line) {
     }
     if (t == "EVENTS.PONG") return;
     m_events.append(msg);
+    emit eventQueued();
 }
 
 qint64 SubspaceLink::send(const QString &type, const QString &value, QVariantMap params) {

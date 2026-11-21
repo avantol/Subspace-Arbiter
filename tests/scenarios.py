@@ -25,7 +25,8 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
 import arbiter as A          # noqa: E402
-from fakes import FakeFlrig, FakeFldigi, FakeSubspace, VaracLog   # noqa: E402
+from fakes import (FakeFlrig, FakeFldigi, FakeSubspace, FakeVara, FakeVarac, VaracLog,   # noqa: E402
+                   free_pair, free_port)
 
 BIN = os.environ.get("ARBITER_BIN", "")
 POLL_MS = 50          # bench: faster than the field default of 200
@@ -37,11 +38,23 @@ class Bench:
     """Fakes plus one arbiter: the Python module in a thread, or the binary as a subprocess."""
 
     def __init__(self, lease_s=300.0, max_connections=2, holds=("on", "on", "on"), extra_ini="",
-                 flrig_has_block=True, varac_extra=""):
+                 flrig_has_block=True, varac_extra="", subspace_ask=False, fldigi_ask=False, layer=False):
+        """subspace_ask / fldigi_ask: that fake is the program of branch study-ask-grant.
+        layer: varac/lever = layer, with a fake VARA behind it; connect_varac() is VarAC."""
         self.dir = tempfile.mkdtemp(prefix="arbiter-bench-")
         self.flrig = FakeFlrig(has_block=flrig_has_block)
-        self.fldigi = FakeFldigi(self.flrig)
-        self.subspace = FakeSubspace(self.flrig, lease_s=lease_s, max_connections=max_connections)
+        self.fldigi = FakeFldigi(self.flrig, has_ask=fldigi_ask)
+        self.subspace = FakeSubspace(self.flrig, lease_s=lease_s, max_connections=max_connections,
+                                     has_ask=subspace_ask)
+        self.vara = None
+        self.varac = None
+        if layer:
+            self.vara = FakeVara()
+            self.layer_port = free_pair()
+            self.layer_kiss = free_port()
+            varac_extra += ("lever = layer\nlayer_port = %d\nlayer_kiss_port = %d\n"
+                            "layer_vara_port = %d\nlayer_vara_kiss_port = %d\n"
+                            % (self.layer_port, self.layer_kiss, self.vara.cmd_port, self.vara.kiss_port))
         self.varalog = VaracLog(os.path.join(self.dir, "VarAC_vara_commands.log"))
         self.ini = os.path.join(self.dir, "arbiter.ini")
         self.logfile = os.path.join(self.dir, "arbiter.log")
@@ -88,10 +101,19 @@ class Bench:
             self.arb.stop.set()
             self.thread.join(5.0)
 
+    def connect_varac(self):
+        """VarAC connects to the layer (its three connections and its two LISTEN lines)."""
+        self.varac = FakeVarac(self.layer_port, self.layer_kiss)
+        ok = wait_for(lambda: self.logged("layer: KISS: connected to VARA") and
+                      len(self.vara.got("LISTEN CQ")) == 1, 4.0)
+        time.sleep(0.2)
+        return ok
+
     def stop(self):
         self.stop_arbiter()
-        for f in (self.subspace, self.fldigi, self.flrig):
-            f.close()
+        for f in (self.varac, self.vara, self.subspace, self.fldigi, self.flrig):
+            if f:
+                f.close()
 
     # -- what the arbiter did, read from its log --------------------------------------
     def log_lines(self):
@@ -630,6 +652,324 @@ def scenario_16():
     return fails
 
 
+# ----------------------------------------------------------------------------
+# [study] ask / grant and the layer: branch study-ask-grant, the C++ arbiter only
+
+def _study_skip():
+    print("   skipped: ask / grant and the layer are in the C++ arbiter only (set ARBITER_BIN)")
+    return []
+
+
+def _asking(b, subspace=True, fldigi=True):
+    return wait_for(lambda: (not subspace or b.logged("Subspace: asks before it transmits")) and
+                    (not fldigi or b.logged("fldigi: asks before it transmits")), 4.0)
+
+
+def _send(b, **kw):
+    t = threading.Thread(target=b.subspace.send, kwargs=kw, daemon=True)
+    t.start()
+    return t
+
+
+def scenario_17():
+    """Both programs ask. fldigi's start waits for Subspace's message; Subspace's next message
+    waits for fldigi's transmission, and for the radio to un-key after it."""
+    if not BIN:
+        return _study_skip()
+    b = Bench(subspace_ask=True, fldigi_ask=True)
+    fails = []
+    try:
+        b.start()
+        check(_asking(b), "the arbiter finds that both programs ask", fails)
+        t = _send(b, frames=2, frame_s=0.6, gap_s=0.3)
+        check(wait_for(lambda: b.flrig.ptt == 1, 2.0) and b.subspace.sends[0][1] == "granted",
+              "radio free: Subspace's message is granted and keys", fails)
+        check(b.fldigi.start() == "waiting", "fldigi's start waits inside fldigi", fails)
+        check(wait_for(lambda: b.logged("fldigi: waits (Subspace TX)"), 2.0), "the arbiter says what fldigi waits for", fails)
+        t.join()
+        off_t = time.time()
+        check(b.fldigi.state == "RX", "fldigi did not start during Subspace's message", fails)
+        check(wait_for(lambda: b.fldigi.state == "TX", 3.0) and b.fldigi.starts[-1][1] == "granted",
+              "fldigi starts by the grant after Subspace's message", fails)
+        waited = time.time() - off_t
+        check(waited >= FRAME_GAP_S - 0.15, "%.2f s after Subspace's last PTT off (frame gap %.1f s)" % (waited, FRAME_GAP_S), fails)
+        t = _send(b, frames=1, frame_s=0.5)
+        check(wait_for(lambda: b.subspace.wait_reasons == ["fldigi TX"], 2.0), "Subspace's next message waits, told 'fldigi TX'", fails)
+        time.sleep(0.5)
+        check(b.flrig.key_owner == "fldigi" and len(b.subspace.sends) == 1, "Subspace does not key during fldigi's transmission", fails)
+        # fldigi reports RX before its PTT off reaches the radio (measured: about 1 s)
+        b.fldigi.waiting = b.fldigi.granted = 0
+        b.fldigi.state = "RX"
+        check(wait_for(lambda: b.subspace.wait_reasons[-1] == "radio keyed", 2.0), "fldigi reports RX, radio still keyed: Subspace told 'radio keyed'", fails)
+        time.sleep(0.4)
+        check(len(b.subspace.sends) == 1, "no grant onto a keyed radio", fails)
+        b.flrig.key(0, "fldigi")
+        check(wait_for(lambda: len(b.subspace.sends) == 2, 2.0) and b.subspace.sends[-1][1] == "granted",
+              "granted when the radio is un-keyed", fails)
+        t.join()
+        check(wait_for(lambda: b.logged("Subspace: transmission over (message 2"), 2.0), "Subspace's end report arrives", fails)
+        check(not b.set_enabled_requests() and not b.fldigi.rx_only and not b.logged("fldigi: disabled"),
+              "neither program's own switch was thrown", fails)
+    finally:
+        b.stop()
+    return fails
+
+
+def scenario_18():
+    """The layer and a Subspace that asks: a message waits for a VARA link to end; VarAC is held
+    with BUSY ON / LISTEN OFF during Subspace's message; VarAC's kept CONNECT goes on after it."""
+    if not BIN:
+        return _study_skip()
+    b = Bench(subspace_ask=True, fldigi_ask=True, layer=True, extra_ini="vara_burst_hold_s = 1.0\n")
+    fails = []
+    try:
+        b.start()
+        check(b.connect_varac(), "VarAC reaches VARA through the layer, its LISTEN lines passed on", fails)
+        check(_asking(b), "the arbiter finds that both programs ask", fails)
+        b.vara.say("CONNECTED WM8Q K9AVT 500")
+        check(wait_for(lambda: b.logged("VarAC: link open"), 2.0), "VARA link seen in the layer's traffic", fails)
+        t = _send(b, frames=1, frame_s=0.8)
+        check(wait_for(lambda: b.subspace.wait_reasons == ["VARA link"], 2.0), "Subspace's message waits, told 'VARA link'", fails)
+        time.sleep(0.4)
+        check(not b.subspace.sends and b.flrig.ptt == 0, "nothing keyed during the link", fails)
+        check(not b.set_enabled_requests() and not b.fldigi.rx_only, "no switch thrown in programs that ask", fails)
+        b.vara.say("DISCONNECTED")
+        t0 = time.time()
+        check(wait_for(lambda: len(b.subspace.sends) == 1, 2.0), "granted after DISCONNECTED", fails)
+        if b.subspace.sends:
+            check(b.subspace.sends[0][2] - t0 < 0.3, "within %.2f s of it" % (b.subspace.sends[0][2] - t0), fails)
+        check(wait_for(lambda: b.varac.got("BUSY ON") and b.vara.got("LISTEN OFF"), 1.0),
+              "during Subspace's message VarAC is told BUSY ON, VARA LISTEN OFF", fails)
+        b.varac.say("CONNECT WM8Q K9AVT")
+        time.sleep(0.3)
+        check(not b.vara.got("CONNECT WM8Q K9AVT") and b.logged("kept back until the release: CONNECT WM8Q K9AVT"),
+              "VarAC's CONNECT is kept back", fails)
+        t.join()
+        check(wait_for(lambda: b.vara.got("CONNECT WM8Q K9AVT"), 3.0), "passed on to VARA after Subspace's message", fails)
+        check(wait_for(lambda: len(b.varac.got("BUSY OFF")) == 1, 1.0) and len(b.vara.got("LISTEN ON")) == 2
+              and len(b.vara.got("LISTEN CQ")) == 2, "VarAC told BUSY OFF, VARA given VarAC's LISTEN lines again", fails)
+        t = _send(b, frames=1, frame_s=0.3)
+        check(wait_for(lambda: b.subspace.wait_reasons[-1:] == ["VARA TX"], 2.0), "the passed CONNECT makes Subspace's next message wait ('VARA TX')", fails)
+        b.vara.say("DISCONNECTED")
+        check(wait_for(lambda: len(b.subspace.sends) == 2, 2.0), "granted when VARA says DISCONNECTED", fails)
+        t.join()
+        b.stop_arbiter()
+        check(wait_for(lambda: not b.varac.cmd.open, 3.0), "arbiter closed: VarAC's connection to VARA is closed", fails)
+    finally:
+        b.stop()
+    return fails
+
+
+def scenario_19():
+    """The study arbiter with programs that cannot ask: said once each, held as before."""
+    if not BIN:
+        return _study_skip()
+    b = Bench()
+    fails = []
+    try:
+        b.start()
+        check(wait_for(lambda: b.logged("Subspace: this Subspace has no ask / grant"), 4.0), "Subspace without ask / grant found (no answer)", fails)
+        check(b.logged("fldigi: this fldigi has no ask / grant"), "fldigi without ask / grant found (a fault)", fails)
+        b.varalog.line("CONNECTED")
+        check(wait_for(lambda: b.held("Subspace") and b.subspace.tx_enabled is False, 3.0), "Subspace held with its TX switch", fails)
+        check(wait_for(lambda: b.held("fldigi") and b.fldigi.rx_only, 2.0), "fldigi held with receive-only", fails)
+        time.sleep(1.5)
+        b.varalog.line("DISCONNECTED")
+        check(wait_for(lambda: b.subspace.tx_enabled and not b.fldigi.rx_only, 3.0), "both released after the link", fails)
+        said = [l for l in b.log_lines() if "has no ask / grant" in l]
+        check(len(said) == 2 and not b.logged("API.ERROR"), "each said once, no error lines", fails)
+    finally:
+        b.stop()
+    return fails
+
+
+def scenario_20():
+    """Subspace asks, fldigi cannot: Subspace's granted message holds fldigi with receive-only."""
+    if not BIN:
+        return _study_skip()
+    b = Bench(subspace_ask=True)
+    fails = []
+    try:
+        b.start()
+        check(_asking(b, fldigi=False), "the arbiter finds that Subspace asks", fails)
+        t = _send(b, frames=2, frame_s=0.6, gap_s=0.3)
+        check(wait_for(lambda: len(b.subspace.sends) == 1, 2.0), "radio free: Subspace's message is granted", fails)
+        check(wait_for(lambda: b.fldigi.rx_only, 1.0), "fldigi held with receive-only during it", fails)
+        t.join()
+        check(wait_for(lambda: not b.fldigi.rx_only, 3.0), "fldigi released after it", fails)
+        b.fldigi._tx()
+        time.sleep(0.3)
+        t = _send(b, frames=1, frame_s=0.4)
+        check(wait_for(lambda: b.subspace.wait_reasons == ["fldigi TX"], 2.0), "Subspace's message waits for an fldigi that cannot ask", fails)
+        b.fldigi._rx()
+        check(wait_for(lambda: len(b.subspace.sends) == 2, 2.0), "granted when fldigi is back in receive", fails)
+        t.join()
+        check(not b.set_enabled_requests(), "Subspace's TX switch was never thrown", fails)
+    finally:
+        b.stop()
+    return fails
+
+
+def scenario_21():
+    """Subspace stops without a word in the middle of its granted message."""
+    if not BIN:
+        return _study_skip()
+    b = Bench(subspace_ask=True, fldigi_ask=True)
+    fails = []
+    try:
+        b.start()
+        check(_asking(b), "the arbiter finds that both programs ask", fails)
+        _send(b, frames=1, frame_s=4.0)
+        check(wait_for(lambda: b.flrig.ptt == 1, 2.0), "Subspace's message is granted and keys", fails)
+        time.sleep(0.3)
+        check(b.fldigi.start() == "waiting" and wait_for(lambda: b.logged("fldigi: waits (Subspace TX)"), 2.0),
+              "fldigi's start waits for it", fails)
+        b.subspace.drop()
+        t0 = time.time()
+        check(wait_for(lambda: b.logged("Subspace: grant over (Subspace is not connected)"), 2.0), "the grant ends with Subspace's connection", fails)
+        check(b.logged("Subspace: not connected; no longer counted as transmitting"), "Subspace no longer counted as transmitting", fails)
+        check(wait_for(lambda: b.fldigi.state == "TX", 2.0), "fldigi is granted %.2f s after Subspace stopped" % (time.time() - t0), fails)
+        b.fldigi.end()
+    finally:
+        b.stop()
+    return fails
+
+
+def scenario_22():
+    """A waiting message given up by the operator; a grant that no key-up follows."""
+    if not BIN:
+        return _study_skip()
+    b = Bench(subspace_ask=True)
+    fails = []
+    try:
+        b.start()
+        check(_asking(b, fldigi=False), "the arbiter finds that Subspace asks", fails)
+        b.varalog.line("CONNECTED")
+        check(wait_for(lambda: b.logged("VarAC: link open"), 3.0), "VARA link open", fails)
+        check(b.subspace.send(give_up_s=0.6) == "given up", "the operator halts the waiting message", fails)
+        check(wait_for(lambda: b.logged("Subspace: no longer asks (message 1)"), 2.0), "the arbiter drops the ask", fails)
+        b.varalog.line("DISCONNECTED")
+        time.sleep(1.0)
+        check(not b.logged("Subspace: granted"), "nothing is granted after the link", fails)
+        check(b.subspace.send(silent_after_grant=True) == "granted", "a new message is granted", fails)
+        check(wait_for(lambda: b.fldigi.rx_only, 1.0), "fldigi held for it", fails)
+        t0 = time.time()
+        check(wait_for(lambda: b.logged("Subspace: grant over (no key-up followed it)"), 3.0),
+              "no key-up follows: the grant ends by itself after %.1f s" % (time.time() - t0), fails)
+        check(wait_for(lambda: not b.fldigi.rx_only, 3.0), "fldigi released", fails)
+    finally:
+        b.stop()
+    return fails
+
+
+def scenario_23():
+    """The arbiter stops: the programs' asking ends and they transmit as without it."""
+    if not BIN:
+        return _study_skip()
+    ask = "\n[ask]\nsubspace_lease_ms = 1500\nsubspace_renew_s = 0.5\nfldigi_lease_ms = 600\n"
+    fails = []
+    b = Bench(subspace_ask=True, fldigi_ask=True, extra_ini=ask)
+    try:
+        b.start()
+        check(_asking(b), "the arbiter finds that both programs ask", fails)
+        b.stop_arbiter(hard=True)
+        t0 = time.time()
+        check(b.fldigi.start() == "waiting", "arbiter killed: fldigi's start still waits (its asking lasts 0.6 s)", fails)
+        check(wait_for(lambda: b.fldigi.state == "TX", 2.0) and b.fldigi.starts[-1][1] == "lease lapsed",
+              "it goes ahead by itself %.1f s later" % (time.time() - t0), fails)
+        b.fldigi.end()
+        how = b.subspace.send(frames=1, frame_s=0.3)
+        check(how in ("lease lapsed", "not asked"), "Subspace's message goes out %.1f s after the kill (%s)" % (time.time() - t0, how), fails)
+    finally:
+        b.stop()
+    b = Bench(subspace_ask=True, fldigi_ask=True)
+    try:
+        b.start()
+        check(_asking(b), "second arbiter: both programs ask", fails)
+        b.stop_arbiter()
+        check(wait_for(lambda: b.subspace.ask_until == 0.0, 2.0), "clean close: Subspace told to stop asking", fails)
+        check(b.subspace.send(frames=1, frame_s=0.3) == "not asked", "its message goes out at once", fails)
+    finally:
+        b.stop()
+    return fails
+
+
+def scenario_24():
+    """The layer: a VarAC start command while the radio is free makes the others wait at once;
+    of two programs that wait, the one that asked first is granted first."""
+    if not BIN:
+        return _study_skip()
+    b = Bench(subspace_ask=True, fldigi_ask=True, layer=True, extra_ini="vara_burst_hold_s = 1.0\n")
+    fails = []
+    try:
+        b.start()
+        check(b.connect_varac() and _asking(b), "VarAC connected through the layer; both programs ask", fails)
+        b.varac.say("CQFRAME WM8Q 500")
+        check(wait_for(lambda: b.vara.got("CQFRAME WM8Q 500"), 1.0) and not b.varac.got("BUSY ON"),
+              "radio free: VarAC's CQ goes to VARA at once", fails)
+        t = _send(b, frames=1, frame_s=0.6)
+        time.sleep(0.15)
+        check(b.fldigi.start() == "waiting", "fldigi's start waits", fails)
+        check(wait_for(lambda: b.subspace.wait_reasons == ["VARA TX"] and b.logged("fldigi: waits (VARA TX)"), 1.0),
+              "both wait for VARA's transmission, before any PTT ON", fails)
+        b.vara.say("PTT ON")
+        time.sleep(0.5)
+        b.vara.say("PTT OFF")
+        check(not b.subspace.sends and b.fldigi.state == "RX", "nothing granted during VARA's transmission", fails)
+        check(wait_for(lambda: len(b.subspace.sends) == 1, 3.0), "Subspace (asked first) is granted first", fails)
+        check(b.fldigi.state == "RX" and wait_for(lambda: b.logged("fldigi: waits (Subspace TX)"), 1.0), "fldigi now waits for Subspace", fails)
+        t.join()
+        check(wait_for(lambda: b.fldigi.state == "TX", 3.0), "then fldigi is granted", fails)
+        check(len(b.varac.got("BUSY ON")) == 1, "VarAC told BUSY ON once for both transmissions", fails)
+        b.fldigi.end()
+        check(wait_for(lambda: len(b.varac.got("BUSY OFF")) == 1, 2.0), "and BUSY OFF after them", fails)
+    finally:
+        b.stop()
+    return fails
+
+
+def scenario_25():
+    """The layer while VarAC is held: a CQ's two identical lines kept once, VARA's own BUSY
+    lines kept back, a kept CONNECT taken back by VarAC, VarAC closing during the hold."""
+    if not BIN:
+        return _study_skip()
+    b = Bench(fldigi_ask=True, layer=True, extra_ini="vara_burst_hold_s = 1.0\n")
+    fails = []
+    try:
+        b.start()
+        check(b.connect_varac() and _asking(b, subspace=False), "VarAC connected through the layer; fldigi asks", fails)
+        b.fldigi.start()
+        check(wait_for(lambda: b.fldigi.state == "TX", 2.0), "radio free: fldigi's start is granted", fails)
+        check(wait_for(lambda: b.varac.got("BUSY ON") and b.vara.got("LISTEN OFF"), 1.0), "VarAC told BUSY ON, VARA LISTEN OFF", fails)
+        b.vara.say("BUSY ON")
+        b.vara.say("BUSY OFF")
+        b.varac.say("CQFRAME WM8Q 500")
+        time.sleep(0.3)
+        b.varac.say("CQFRAME WM8Q 500")
+        time.sleep(0.3)
+        check(len(b.varac.got("BUSY ON")) == 1 and not b.varac.got("BUSY OFF"), "VARA's own BUSY lines do not reach VarAC during the hold", fails)
+        check(not b.vara.got("CQFRAME WM8Q 500") and b.logged("the same line is already kept"), "the CQ's second line is not kept twice", fails)
+        b.fldigi.end()
+        check(wait_for(lambda: b.varac.got("BUSY OFF"), 2.0), "fldigi over: VarAC told BUSY OFF", fails)
+        time.sleep(0.3)
+        check(len(b.vara.got("CQFRAME WM8Q 500")) == 1, "VARA gets the CQ line once", fails)
+        check(len(b.varac.got("OK")) == 3, "VarAC sees VARA's OK for its own three lines only (%d)" % len(b.varac.got("OK")), fails)
+        time.sleep(1.2)                       # the passed CQ counts as VARA transmitting for vara_burst_hold_s
+        b.fldigi.start()
+        check(wait_for(lambda: b.fldigi.state == "TX" and len(b.varac.got("BUSY ON")) == 2, 2.0), "second fldigi transmission: VarAC held again", fails)
+        b.varac.say("CONNECT WM8Q K9AVT")
+        time.sleep(0.2)
+        b.varac.say("ABORT")
+        check(wait_for(lambda: b.varac.got("DISCONNECTED"), 1.0) and b.vara.got("ABORT") and not b.vara.got("CONNECT WM8Q K9AVT"),
+              "VarAC takes its kept CONNECT back: VARA never gets it, VarAC is told DISCONNECTED", fails)
+        b.varac.close()
+        check(wait_for(lambda: b.logged("VarAC: hold over (fldigi TX): VarAC closed its connection"), 2.0), "VarAC closes during the hold: the hold ends", fails)
+        b.fldigi.end()
+    finally:
+        b.stop()
+    return fails
+
+
 SCENARIOS = {
     1: ("Replay of 27 Oct: auto-reply due during a VARA link", scenario_1),
     2: ("VARA keys while a Subspace message is in progress", scenario_2),
@@ -647,6 +987,15 @@ SCENARIOS = {
     14: ("A flrig without the un-key block", scenario_14),
     15: ("fldigi answered, then stopped: a skipped hold is logged", scenario_15),
     16: ("Dial change credited to Subspace with RIG.FREQ before or after", scenario_16),
+    17: ("[study] Both ask: each waits for the other's transmission and for the radio to un-key", scenario_17),
+    18: ("[study] Layer: Subspace waits for a VARA link; VarAC held during Subspace's message", scenario_18),
+    19: ("[study] Programs that cannot ask are held as before", scenario_19),
+    20: ("[study] Subspace asks, fldigi cannot", scenario_20),
+    21: ("[study] Subspace stops in the middle of its granted message", scenario_21),
+    22: ("[study] A waiting message given up; a grant no key-up follows", scenario_22),
+    23: ("[study] The arbiter stops: asking ends, the programs transmit as without it", scenario_23),
+    24: ("[study] Layer: a VarAC start makes the others wait at once; first asked, first granted", scenario_24),
+    25: ("[study] Layer: what is kept and kept back while VarAC is held", scenario_25),
 }
 
 
