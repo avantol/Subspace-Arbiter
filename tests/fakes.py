@@ -450,12 +450,17 @@ class FakeSubspace:
             self.flrig.key(0, "Hamlib")
 
     def send(self, frames=1, frame_s=0.5, gap_s=0.3, text="WM8Q: K7RIE HELLO", give_up_s=None,
-             silent_after_grant=False):
+             silent_after_grant=False, at_ask=None, halt_after_grant_s=None):
         """The operator's Send in the study Subspace. While the arbiter's asking stands, the
         message's first frame waits for TX.GRANT; a lapsed asking lets it go (as before the
         study); give_up_s = the operator halts the waiting message after that long;
-        silent_after_grant = the grant is taken and nothing follows (no key-up, no report).
-        Returns "refused", "given up", or how it went out."""
+        silent_after_grant = the grant is taken and nothing follows (no key-up, no report);
+        at_ask = a scenario's function that is handed the sending of the ask and calls it
+        itself (to time the ask against something else);
+        halt_after_grant_s = the operator halts the granted message that long after the
+        grant, before its key-up: the end report, and 0.2 s later a PTT off although
+        nothing was keyed (the program's stopTx2(), station log 2026-11-20 19:14:56).
+        Returns "refused", "given up", "halted", or how it went out."""
         if not self.tx_enabled:
             self.refused_sends += 1
             return "refused"
@@ -465,7 +470,11 @@ class FakeSubspace:
             self.ask_counter += 1
             aid = self.ask_id = self.ask_counter
             t0 = time.time()
-            self.push("TX.ASK", ASK_ID=aid, ASKING=True, KEYUP_IN_MS=300)
+            ask = lambda: self.push("TX.ASK", ASK_ID=aid, ASKING=True, KEYUP_IN_MS=300)
+            if at_ask:
+                at_ask(ask)
+            else:
+                ask()
             while True:
                 if self.granted_id == aid:
                     how = "granted"
@@ -490,6 +499,13 @@ class FakeSubspace:
         if silent_after_grant and how == "granted":
             self.granted_id = 0
             return how
+        if halt_after_grant_s is not None and how == "granted":
+            time.sleep(halt_after_grant_s)
+            self.granted_id = 0
+            self.push("TX.ASK", ASK_ID=aid, ASKING=False)
+            time.sleep(0.2)
+            self.push("RIG.PTT", "off", PTT=False, UTC=int(time.time() * 1000))
+            return "halted"
         done = self.transmit(frames=frames, frame_s=frame_s, gap_s=gap_s, text=text)
         if how == "granted" and (done or self.granted_id == aid):
             self.granted_id = 0

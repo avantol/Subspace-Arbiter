@@ -104,7 +104,9 @@ void Arbiter::subspaceEvents(double now) {
             bool on = p.contains("PTT") ? p.value("PTT").toBool()
                                         : msg.value("value").toString().toLower() == "on";
             if (on) { m_ssPtt = true; m_ssMsg = true; if (m_ssGrantId != 0) m_ssGrantKeyed = true; }
-            else { m_ssPtt = false; m_ssLastOffT = now; }
+            // a PTT off that follows no PTT on ends no frame: a message halted before its
+            // key-up sends one (station 2026-11-20 19:14:56: VarAC held again for 2.6 s)
+            else { if (m_ssPtt) m_ssLastOffT = now; m_ssPtt = false; }
         } else if (t == "TX.ASK") {
             // [study] ASKING true: a message's first frame waits for a grant. false: that
             // ask is given up, or the granted message is over.

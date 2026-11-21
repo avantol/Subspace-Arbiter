@@ -970,6 +970,187 @@ def scenario_25():
     return fails
 
 
+def _spin(s):
+    """A wait exact to well under a millisecond (sleep() is not)."""
+    t = time.perf_counter() + s
+    while time.perf_counter() < t:
+        pass
+
+
+def scenario_26():
+    """The layer: a VarAC start command and another program's ask in the same instant, each
+    kind of start command, the ask from 3 ms before the command to 3 ms after it (fldigi:
+    anywhere in the arbiter's poll period). In every round one of the two gets the radio:
+    the command goes to VARA and the program waits, or the program is granted and the
+    command is kept until the release. Never both, never neither."""
+    if not BIN:
+        return _study_skip()
+    b = Bench(subspace_ask=True, fldigi_ask=True, layer=True, extra_ini="vara_burst_hold_s = 1.0\n")
+    fails = []
+    rounds = []          # (program, kind, the ask that many ms after the command, who got the radio)
+    wrong = []           # rounds where both or neither got it
+    not_kept = []        # the program won and the command was not kept, or not passed on later
+    not_waited = []      # VarAC won and the program was granted inside VARA's transmission
+    latest = [0.0]       # the longest a kept command waited
+    soonest = [99.0]     # the shortest time from a passed command to the loser's grant
+    switch = sys.getswitchinterval()
+    sys.setswitchinterval(0.0005)
+
+    def command(n, kind):
+        """The start command of round n: (name, send it, when VARA got it or None)."""
+        if kind == "KISS":
+            frame = b"\xc0\x00" + ("round %02d" % n).encode() + b"\xc0"
+            seen = []
+
+            def at_vara():
+                if not seen and frame in b.vara.kiss.raw:
+                    seen.append(time.time())
+                return seen[0] if seen else None
+            return "KISS frame", lambda: b.varac.kiss.sock.sendall(frame), at_vara
+        line = "CQFRAME WM8Q-%d 500" % n if kind == "CQFRAME" else "CONNECT WM8Q K9R%02d" % n
+        return line, lambda: b.varac.say(line), lambda: next((t for x, t in b.vara.cmd.lines if x == line), None)
+
+    def kept_lines():
+        return len([l for l in b.log_lines() if "kept back until the release" in l])
+
+    def settle(holds, program_won):
+        wait_for(lambda: len(b.varac.got("BUSY ON")) == holds and len(b.varac.got("BUSY OFF")) == holds, 5.0)
+        time.sleep(1.2 if program_won else 0.2)     # a command passed on late counts as VARA transmitting
+
+    def judge(who, kind, d_ms, a, g, kept0, at_vara, sent_t, grant_t, end_program):
+        """a: the command is at VARA; g: the program is granted; both read 0.2 s after the first of them."""
+        tag = "%s, %s, ask %+.1f ms" % (who, kind, d_ms)
+        if a == g:
+            wrong.append(tag + (": BOTH" if a else ": NEITHER"))
+            end_program()
+            rounds.append((who, kind, d_ms, "both" if a else "neither"))
+            return False
+        if g:
+            ok = kept_lines() == kept0 + 1
+            end_program()
+            ok = wait_for(lambda: at_vara() is not None, 4.0, step=0.005) and ok
+            if ok:
+                latest[0] = max(latest[0], at_vara() - sent_t)
+            else:
+                not_kept.append(tag)
+        else:
+            ok = wait_for(lambda: grant_t() is not None, 4.0, step=0.005)
+            gap = grant_t() - at_vara() if ok else 0.0
+            if ok and gap >= 0.9:
+                soonest[0] = min(soonest[0], gap)
+            else:
+                not_waited.append(tag + (": granted %.2f s after the command" % gap if ok else ": never granted"))
+            end_program()
+        rounds.append((who, kind, d_ms, who if g else "VarAC"))
+        return g
+
+    try:
+        b.start()
+        check(b.connect_varac() and _asking(b), "VarAC connected through the layer; both programs ask", fails)
+        n = 0
+        for kind in ("CQFRAME", "CONNECT", "KISS"):
+            for d_ms in (-3.0, -1.0, -0.3, -0.1, -0.05, -0.02, 0.0, 0.0, 0.1, 0.3, 1.0, 3.0):
+                n += 1
+                name, start, at_vara = command(n, kind)
+                r0, kept0, sent = len(b.subspace.requests), kept_lines(), []
+
+                def both(ask, start=start, d_ms=d_ms, sent=sent):
+                    if d_ms >= 0:
+                        sent.append(time.time())
+                        start()
+                        _spin(d_ms / 1000.0)
+                        ask()
+                    else:
+                        ask()
+                        _spin(-d_ms / 1000.0)
+                        sent.append(time.time())
+                        start()
+
+                def grant_t(r0=r0):
+                    return next((t for q, p, t in b.subspace.requests[r0:] if q == "TX.GRANT" and p.get("GRANT")), None)
+                t = _send(b, frames=1, frame_s=0.5, at_ask=both)
+                wait_for(lambda: at_vara() is not None or grant_t() is not None, 1.0, step=0.002)
+                time.sleep(0.2)
+                won = judge("Subspace", kind, d_ms, at_vara() is not None, grant_t() is not None, kept0,
+                            at_vara, sent[0] if sent else time.time(), grant_t, lambda t=t: t.join(8.0))
+                settle(n, won)
+        for d_ms in (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55):
+            n += 1
+            name, start, at_vara = command(n, "CQFRAME")
+            s0, kept0 = len(b.fldigi.starts), kept_lines()
+            b.fldigi.start()                  # waits; the arbiter learns of it at its next poll
+            _spin(d_ms / 1000.0)
+            sent_t = time.time()
+            start()
+
+            def grant_t(s0=s0):
+                return next((t for _, how, t in b.fldigi.starts[s0:] if how == "granted"), None)
+
+            def end_fldigi():
+                time.sleep(0.4)
+                b.fldigi.end()
+            wait_for(lambda: at_vara() is not None or grant_t() is not None, 1.0, step=0.002)
+            time.sleep(0.2)
+            won = judge("fldigi", "CQFRAME", -d_ms, at_vara() is not None, grant_t() is not None, kept0,
+                        at_vara, sent_t, grant_t, end_fldigi)
+            settle(n, won)
+
+        for who in ("Subspace", "fldigi"):
+            mine = [r for r in rounds if r[0] == who]
+            print("        %s against VarAC, %d rounds (ask that many ms after the command: who got the radio)" % (who, len(mine)))
+            for kind in ("CQFRAME", "CONNECT", "KISS"):
+                row = ["%+g: %s" % (d, w) for _, k, d, w in mine if k == kind]
+                if row:
+                    print("          %-8s %s" % (kind, "   ".join(row)))
+        check(not wrong, "%d rounds: one of the two got the radio in each, never both, never neither%s"
+              % (len(rounds), "" if not wrong else " - " + "; ".join(wrong)), fails)
+        winners = set(r[3] for r in rounds if r[0] == "Subspace")
+        check(winners == {"Subspace", "VarAC"}, "both orders happened against Subspace (%s)" % ", ".join(sorted(winners)), fails)
+        check(not not_kept, "a command that lost was kept and passed on to VARA after the program's transmission "
+              "(at most %.1f s after VarAC sent it)%s" % (latest[0], "" if not not_kept else " - " + "; ".join(not_kept)), fails)
+        check(not not_waited, "a program that lost was granted after VARA's transmission (soonest %.2f s after the command)%s"
+              % (soonest[0], "" if not not_waited else " - " + "; ".join(not_waited)), fails)
+        check(len(b.varac.got("BUSY ON")) == n and len(b.varac.got("BUSY OFF")) == n,
+              "VarAC told BUSY ON and BUSY OFF once per round (%d / %d in %d rounds)"
+              % (len(b.varac.got("BUSY ON")), len(b.varac.got("BUSY OFF")), n), fails)
+    finally:
+        sys.setswitchinterval(switch)
+        b.stop()
+    return fails
+
+
+def scenario_27():
+    """A granted message halted by the operator before its key-up: Subspace sends its end
+    report and, 0.2 s later, a PTT off although nothing was keyed. That PTT off is not the
+    end of a frame: VarAC is released once and not held again (station 2026-11-20 19:14:56:
+    released, held again 0.2 s later for 2.6 s)."""
+    if not BIN:
+        return _study_skip()
+    b = Bench(subspace_ask=True, fldigi_ask=True, layer=True, extra_ini="vara_burst_hold_s = 1.0\n")
+    fails = []
+    try:
+        b.start()
+        check(b.connect_varac() and _asking(b), "VarAC connected through the layer; both programs ask", fails)
+        t = _send(b, halt_after_grant_s=0.4)
+        check(wait_for(lambda: b.varac.got("BUSY ON"), 2.0), "the message is granted, VarAC told BUSY ON", fails)
+        t.join()
+        check(wait_for(lambda: b.logged("Subspace: transmission over (message 1"), 1.0) and
+              wait_for(lambda: len(b.varac.got("BUSY OFF")) == 1, 1.0),
+              "halted before its key-up: VarAC told BUSY OFF with the end report", fails)
+        time.sleep(0.3)                       # the PTT off has come by now
+        t0 = time.time()
+        check(b.fldigi.start() == "waiting" and wait_for(lambda: b.fldigi.state == "TX", 0.35),
+              "fldigi's start right after it is granted in %.2f s, not after the frame gap (%.1f s)"
+              % (time.time() - t0, FRAME_GAP_S), fails)
+        b.fldigi.end()
+        time.sleep(0.8)
+        holds = len([l for l in b.log_lines() if "VarAC: disabled (Subspace TX)" in l])
+        check(holds == 1, "the PTT off that follows no PTT on does not hold VarAC again for Subspace (%d holds)" % holds, fails)
+    finally:
+        b.stop()
+    return fails
+
+
 SCENARIOS = {
     1: ("Replay of 27 Oct: auto-reply due during a VARA link", scenario_1),
     2: ("VARA keys while a Subspace message is in progress", scenario_2),
@@ -996,6 +1177,8 @@ SCENARIOS = {
     23: ("[study] The arbiter stops: asking ends, the programs transmit as without it", scenario_23),
     24: ("[study] Layer: a VarAC start makes the others wait at once; first asked, first granted", scenario_24),
     25: ("[study] Layer: what is kept and kept back while VarAC is held", scenario_25),
+    26: ("[study] Layer: a VarAC start command and an ask in the same instant", scenario_26),
+    27: ("[study] A granted message halted before its key-up: its PTT off holds nobody", scenario_27),
 }
 
 
