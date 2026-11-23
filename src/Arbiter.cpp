@@ -137,9 +137,9 @@ void Arbiter::subspaceEvents(double now) {
                 m_log(QString("Subspace: transmission over (message %1, %2 s after the grant)")
                           .arg(id).arg(now - m_ssGrantT, 0, 'f', 1));
                 m_log(m_ssGrantKeyed
-                          ? QString("TX: Subspace message %1: SENT, completed (cleared to send %2 s after it asked; key-up to end %3 s)")
+                          ? QString("TX: Subspace message %1: SENT, completed (cleared to send %2 s after it asked; PTT off %3 s after keyed)")
                                 .arg(id).arg(m_ssGrantWaitS, 0, 'f', 1).arg(now - m_ssGrantKeyT, 0, 'f', 1)
-                          : QString("TX: Subspace message %1: NOT SENT (cleared to send, but ended without a key-up)").arg(id));
+                          : QString("TX: Subspace message %1: NOT SENT (cleared to send, but ended without a PTT-on)").arg(id));
                 m_ssGrantId = 0;
                 m_ssGrantKeyed = false;
                 if (p.contains("REPLY_MS")) {
@@ -268,7 +268,7 @@ void Arbiter::subspaceAsk(double now) {
 void Arbiter::endSubspaceGrant(const QString &why) {
     m_log(QString("Subspace: grant over (%1)").arg(why));
     m_log(QString("TX: Subspace message %1: %2 (%3)").arg(m_ssGrantId)
-              .arg(m_ssGrantKeyed ? "SENT, its end not reported" : "NOT SENT", why));
+              .arg(m_ssGrantKeyed ? "SENT, its end not reported" : "NOT SENT", QString(why).replace("key-up", "PTT-on")));
     m_ssGrantId = 0;
     m_ssGrantKeyed = false;
 }
@@ -437,7 +437,7 @@ void Arbiter::decide() {
         m_log(QString("fldigi: transmission over (start %1, %2 s after the grant)")
                   .arg(m_flGrantSerial).arg(now - m_flGrantT, 0, 'f', 1));
         m_log(m_flGrantOnAir
-                  ? QString("TX: fldigi start %1: SENT, completed (cleared to send %2 s after it asked; key-up to end %3 s)")
+                  ? QString("TX: fldigi start %1: SENT, completed (cleared to send %2 s after it asked; PTT off %3 s after keyed)")
                         .arg(m_flGrantSerial).arg(m_flGrantWaitS, 0, 'f', 1).arg(now - m_flGrantOnAirT, 0, 'f', 1)
                   : QString("TX: fldigi start %1: NOT SENT (cleared to send, but fldigi never transmitted)").arg(m_flGrantSerial));
         m_flGrantSerial = 0;

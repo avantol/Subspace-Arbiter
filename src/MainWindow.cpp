@@ -35,7 +35,8 @@ MainWindow::MainWindow(Arbiter &arb, QWidget *parent) : QWidget(parent), m_arb(a
     for (Program *p : m_arb.programs()) {
         Row row;
         row.p = p;
-        grid->addWidget(new QLabel(p->name), r, 0);
+        // the row's label only: the log and CAT Watch keep the program's name "VarAC"
+        grid->addWidget(new QLabel(p->name == "VarAC" ? QString("VarAC/VARA") : p->name), r, 0);
         row.conn = new QLabel; row.conn->setMinimumWidth(320);
         row.state = new QLabel; row.state->setMinimumWidth(90);
         row.reason = new QLabel; row.reason->setMinimumWidth(130);
@@ -68,7 +69,7 @@ MainWindow::MainWindow(Arbiter &arb, QWidget *parent) : QWidget(parent), m_arb(a
     showTx->setToolTip("Each transmit attempt of the three programs and what became of it");
     auto *showAll = new QRadioButton("Show details");
     showAll->setToolTip("The whole log");
-    showAll->setChecked(true);
+    showTx->setChecked(true);   // the window opens on the transmissions
     views->addWidget(showTx);
     views->addWidget(showAll);
     views->addStretch(1);
@@ -91,7 +92,7 @@ MainWindow::MainWindow(Arbiter &arb, QWidget *parent) : QWidget(parent), m_arb(a
     m_tx->document()->setMaximumBlockCount(500);
     m_tx->setFont(mono);
     m_tx->setMinimumSize(900, 260);
-    m_tx->hide();
+    m_text->hide();
     for (const QString &l : m_arb.log().lines()) {
         m_text->appendPlainText(l);
         if (aboutTransmission(l)) addTransmission(l);

@@ -1285,11 +1285,11 @@ def scenario_29():
         # the one line per attempt that "Show transmissions" shows
         tx = [l.split("  TX: ", 1)[1] for l in b.log_lines() if "  TX: " in l]
         want = ["Subspace message 1: SENT, completed (cleared to send ", "Subspace message 2: SENT, completed (cleared to send ",
-                "fldigi start 1: NOT SENT (given up ", "VarAC start 1: SENT, completed (key-up to end ",
-                "VarAC start 2: SENT, a connect: link open (VARA keyed 2 times)",
-                "VarAC start 3: SENT, a connect: no link (VARA keyed 1 time)",
-                "VarAC start 4: NOT SENT (VARA never keyed; start 5 followed it)",
-                "VarAC start 5: NOT SENT (VARA never keyed; the command connection closed)"]
+                "fldigi start 1: NOT SENT (given up ", "VarAC start 1: SENT, completed (PTT off ",
+                "VarAC start 2: SENT, a connect: link open (VARA's PTT went on 2 times)",
+                "VarAC start 3: SENT, a connect: no link (VARA's PTT went on 1 time)",
+                "VarAC start 4: NOT SENT (VARA's PTT never went on; start 5 followed it)",
+                "VarAC start 5: NOT SENT (VARA's PTT never went on; the command connection closed)"]
         for w in want:
             check(len([l for l in tx if l.startswith(w)]) == 1, "one line: " + w, fails)
         check(len(tx) == len(want), "and no other line (%d lines for %d attempts)" % (len(tx), len(want)), fails)

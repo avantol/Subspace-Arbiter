@@ -301,11 +301,12 @@ void VaraLayer::endOpen(const QString &how) {
         m_log(QString("VarAC: start %1 over: %2 (%3 s after VARA got the connect command, %4)").arg(m_open.n).arg(how).arg(s, 0, 'f', 1).arg(keyed));
     // the one line for "Show transmissions": sent means VARA keyed for it
     if (how.isEmpty())
-        m_log(QString("TX: VarAC start %1: SENT, completed (key-up to end %2 s)").arg(m_open.n).arg(air, 0, 'f', 1));
+        m_log(QString("TX: VarAC start %1: SENT, completed (PTT off %2 s after keyed)").arg(m_open.n).arg(air, 0, 'f', 1));
     else if (m_open.keyed > 0)
-        m_log(QString("TX: VarAC start %1: SENT, a connect: %2 (%3)").arg(m_open.n).arg(how, keyed));
+        m_log(QString("TX: VarAC start %1: SENT, a connect: %2 (VARA's PTT went on %3 time%4)")
+                  .arg(m_open.n).arg(how).arg(m_open.keyed).arg(m_open.keyed == 1 ? "" : "s"));
     else
-        m_log(QString("TX: VarAC start %1: NOT SENT, a connect: %2 (VARA never keyed)").arg(m_open.n).arg(how));
+        m_log(QString("TX: VarAC start %1: NOT SENT, a connect: %2 (VARA's PTT never went on)").arg(m_open.n).arg(how));
     m_open = Open{};
 }
 
@@ -314,8 +315,8 @@ void VaraLayer::noEnd(const QString &why) {
     m_log(QString("VarAC: start %1: no end seen (%2; VARA keyed %3 time%4)")
               .arg(m_open.n).arg(why).arg(m_open.keyed).arg(m_open.keyed == 1 ? "" : "s"));
     m_log(m_open.keyed > 0
-              ? QString("TX: VarAC start %1: SENT (VARA keyed; no end seen: %2)").arg(m_open.n).arg(why)
-              : QString("TX: VarAC start %1: NOT SENT (VARA never keyed; %2)").arg(m_open.n).arg(why));
+              ? QString("TX: VarAC start %1: SENT (VARA's PTT went on; no end seen: %2)").arg(m_open.n).arg(why)
+              : QString("TX: VarAC start %1: NOT SENT (VARA's PTT never went on; %2)").arg(m_open.n).arg(why));
     m_open = Open{};
 }
 
@@ -329,7 +330,7 @@ void VaraLayer::keep(bool kiss, const QByteArray &payload, const QString &shown)
             if (!k.kiss && k.payload == payload) {
                 m_log(QString("VarAC: start %1: the same line is already kept (start %2), not kept twice: %3")
                           .arg(n).arg(k.n).arg(shown));
-                m_log(QString("TX: VarAC start %1: NOT SENT (the same line as start %2, which is kept once)").arg(n).arg(k.n));
+                m_log(QString("TX: VarAC start %1: NOT SENT (the same line as start %2, which is stored once)").arg(n).arg(k.n));
                 return;
             }
         }
@@ -347,7 +348,7 @@ bool VaraLayer::dropKept(const QString &why) {
                   .arg(k.n).arg(now - k.t, 0, 'f', 1)
                   .arg(why, k.kiss ? QString("KISS frame, %1 bytes").arg(k.payload.size())
                                    : QString::fromLatin1(k.payload)));
-        m_log(QString("TX: VarAC start %1: NOT SENT (kept back %2 s, then thrown away: %3)")
+        m_log(QString("TX: VarAC start %1: NOT SENT (stored %2 s, then thrown away: %3)")
                   .arg(k.n).arg(now - k.t, 0, 'f', 1).arg(why));
     }
     m_kept.clear();
@@ -414,12 +415,13 @@ VaracWatch::Snapshot VaraLayer::snapshot() const {
 }
 
 QString VaraLayer::status() const {
-    if (!m_listening) return "layer: cannot listen (" + m_portTrouble + ")";
-    if (!m_cmd.varac) return QString("layer: waiting for VarAC on port %1").arg(m_cmd.listenPort);
-    if (!m_cmd.varaOpen) return QString("layer: VarAC connected, VARA not listening on port %1").arg(m_cmd.varaPort);
-    QString s = "layer: VarAC and VARA connected";
-    if (m_held) s += m_deaf ? "; VarAC told BUSY, VARA told LISTEN OFF" : "; VarAC told BUSY, VARA listening";
-    if (!m_kept.isEmpty()) s += QString("; %1 start command(s) kept").arg(m_kept.size());
+    if (!m_listening) return "cannot listen (" + m_portTrouble + ")";
+    if (!m_cmd.varac) return QString("waiting for VarAC on port %1").arg(m_cmd.listenPort);
+    if (!m_cmd.varaOpen) return QString("VarAC connected, VARA not listening on port %1").arg(m_cmd.varaPort);
+    // every start command of VarAC's passes here first and waits while the radio is taken:
+    // for the operator the same as the two programs that ask
+    QString s = "connected; asks before it transmits";
+    if (!m_kept.isEmpty()) s += QString("; %1 start command(s) stored").arg(m_kept.size());
     return s;
 }
 

@@ -5,7 +5,7 @@ project(Arbiter VERSION 1.0.8 LANGUAGES CXX)
 # tag (v1.0.0 -> 1.0.0) or a branch build (1.0.0-dev.<sha>); a plain build
 # uses the project version.
 # [study] branch study-ask-grant: every build from it says so.
-set(ARBITER_VERSION_STRING "${PROJECT_VERSION}-study12" CACHE STRING "version shown by the program")
+set(ARBITER_VERSION_STRING "${PROJECT_VERSION}-study18" CACHE STRING "version shown by the program")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
