@@ -27,8 +27,11 @@ inline const QString VARA = QStringLiteral("VARA link");
 inline const QString VARA_TX = QStringLiteral("VARA TX");
 inline const QString FLDIGI = QStringLiteral("fldigi TX");
 inline const QString SUBSPACE = QStringLiteral("Subspace TX");
+// [study] Subspace's message is over and it waits for the reply it expects: nobody here
+// transmits, the radio stays Subspace's so the reply is heard
+inline const QString SUBSPACE_REPLY = QStringLiteral("Subspace reply");
 inline const QString UNKNOWN = QStringLiteral("radio keyed");
-inline const QStringList ORDER = {VARA, VARA_TX, FLDIGI, SUBSPACE, UNKNOWN};
+inline const QStringList ORDER = {VARA, VARA_TX, FLDIGI, SUBSPACE, SUBSPACE_REPLY, UNKNOWN};
 }
 
 struct Program {
@@ -122,13 +125,30 @@ private:
     qint64 m_ssGrantId = 0;         // the granted message (0 = none)
     double m_ssGrantT = 0;
     bool m_ssGrantKeyed = false;    // its first PTT on was seen
+    // [study] the reply wait. Subspace's end report carries REPLY_MS: how long it waits
+    // for the reply its message expects (0: none). The radio stays Subspace's until then;
+    // TX.REPLY {ASK_ID, REPLY_MS} from Subspace sets a new time (a reply is coming in) or
+    // ends the wait (0: the reply is complete). An end report that carries REPLY_MS also
+    // says no frame follows, so the frame gap is not waited out after its PTT off.
+    qint64 m_ssReplyId = 0;         // the message whose reply is waited for (0 = none)
+    double m_ssReplyUntil = 0;
+    bool m_ssNoGap = false;         // the message's end was reported: free at its PTT off
+    void endSubspaceReply(const QString &why);
     // [study] ask / grant, fldigi (FldigiLink carries the protocol)
     int m_flWaitSerial = 0;         // the start that waits for a grant (0 = none)
     double m_flWaitT = 0;
+    int m_flGrantSerial = 0;        // the granted start whose transmission has not ended yet (0 = none)
+    double m_flGrantT = 0;
+    bool m_flGrantOnAir = false;    // fldigi reported TX during this grant
+    double m_flGrantOnAirT = 0;     // when it first did
+    double m_flGrantWaitS = 0;      // from its ask to its grant
+    double m_ssGrantKeyT = 0;       // Subspace's first key-up under its grant
+    double m_ssGrantWaitS = 0;      // from Subspace's ask to its grant
     QString m_flWaitTold;
 
     // Subspace message tracking (nothing pushed spans the gap between frames)
     bool m_ssPtt = false, m_ssMsg = false, m_ssBusy = false, m_ssHoldOwned = false;
+    bool m_ssBusyTx = false;        // m_ssBusy stands for the polled "transmitting", not for ARQ
     double m_ssLastOffT = 0, m_ssBusyPolledT = 0, m_ssDialT = 0;
     // TX.PENDING: a Subspace frame waits for its key-up, until this time (0 = none)
     double m_ssPendingUntil = 0;

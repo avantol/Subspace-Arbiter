@@ -116,7 +116,8 @@ void VaraLayer::closePipe(Pipe &p, const QString &why) {
     if (&p != &m_cmd) return;
     // VarAC gave up everything it had asked for; a hold ends with its connection
     dropKept("the command connection closed");
-    m_held = m_varaBusy = m_oweDisconnected = false;
+    noEnd("the command connection closed");
+    m_held = m_deaf = m_varaBusy = m_oweDisconnected = false;
     m_ownOk = 0;
     m_varacListen.clear();
     m_link = m_ptt = false;
@@ -148,6 +149,9 @@ void VaraLayer::fromVaracSide(Pipe &p) {
             return;
         }
         say("KISS VarAC -> VARA: " + shown);
+        int n = ++m_startN;
+        m_log(QString("VarAC: start %1 given to VARA at once: KISS frame, %2 bytes").arg(n).arg(data.size()));
+        passed(n, false);
         started("a frame on the KISS port");
     }
     p.vara->write(data);
@@ -181,6 +185,9 @@ void VaraLayer::varacLine(const QString &line) {
             keep(false, line.toLatin1(), line);
             return;
         }
+        int n = ++m_startN;
+        m_log(QString("VarAC: start %1 given to VARA at once: %2").arg(n).arg(line));
+        passed(n, word.startsWith("CONNECT "));
         started(line);
     } else if (word == "ABORT" || word == "DISCONNECT") {
         // VARA never saw a kept CONNECT, so it answers this line with OK and nothing more;
@@ -192,7 +199,7 @@ void VaraLayer::varacLine(const QString &line) {
         if (m_varacListen.isEmpty() || m_varacListen.last() != line) m_varacListen << line;
     }
     toVara(line, false);
-    if (m_held && word.startsWith("LISTEN") && word != "LISTEN OFF") toVara("LISTEN OFF", true);
+    if (m_deaf && word.startsWith("LISTEN") && word != "LISTEN OFF") toVara("LISTEN OFF", true);
 }
 
 void VaraLayer::varaLine(const QString &line) {
@@ -212,16 +219,28 @@ void VaraLayer::varaLine(const QString &line) {
     double now = nowS();
     bool fact = true;
     if (word.startsWith("DISCONNECTED")) {
+        if (m_open.n && m_open.connect) endOpen("no link");
         if (m_link) m_log("VarAC: link closed");
         m_link = false;
         m_burstT = 0;   // the link is over: no burst hold lingers after it
     } else if (word.startsWith("CONNECTED")) {
+        if (m_open.n && m_open.connect) endOpen("link open");
         if (!m_link) m_log("VarAC: link open");
         m_link = true;
     } else if (word.startsWith("PTT ON")) {
         m_ptt = true; m_pttT = now; m_burstT = now;
+        if (m_open.n && ++m_open.keyed == 1) m_open.onT = now;
     } else if (word.startsWith("PTT OFF")) {
         m_ptt = false; m_pttT = now; m_burstT = now;
+        // a CQ, a beacon or a broadcast is one transmission: PENDING, PTT ON, PTT OFF
+        // (measured 2026-11-22, 12 of 12 on the station). A CONNECT keys several times.
+        if (m_open.n && !m_open.connect && m_open.keyed > 0) {
+            endOpen("");
+            // its end is known, so no burst hold lingers after it (the hold is for the pauses
+            // inside a link and between connect requests). WM8Q 2026-11-22 16:37: a Subspace
+            // message waited 12.1 s after a broadcast's PTT OFF and missed its slot.
+            if (!m_link) m_burstT = 0;
+        }
     } else if (word.startsWith("PENDING")) {
         m_burstT = now;
     } else {
@@ -264,31 +283,72 @@ void VaraLayer::started(const QString &) {
     emit changed();
 }
 
+void VaraLayer::passed(int n, bool connect) {
+    noEnd(QString("start %1 followed it").arg(n));
+    m_open = Open{};
+    m_open.n = n;
+    m_open.t = nowS();
+    m_open.connect = connect;
+}
+
+void VaraLayer::endOpen(const QString &how) {
+    QString keyed = QString("VARA keyed %1 time%2").arg(m_open.keyed).arg(m_open.keyed == 1 ? "" : "s");
+    double s = nowS() - m_open.t;        // since VARA got the start command
+    double air = nowS() - m_open.onT;    // since VARA's first PTT ON for it
+    if (how.isEmpty())
+        m_log(QString("VarAC: transmission over (start %1, on the air %2 s)").arg(m_open.n).arg(air, 0, 'f', 1));
+    else
+        m_log(QString("VarAC: start %1 over: %2 (%3 s after VARA got the connect command, %4)").arg(m_open.n).arg(how).arg(s, 0, 'f', 1).arg(keyed));
+    // the one line for "Show transmissions": sent means VARA keyed for it
+    if (how.isEmpty())
+        m_log(QString("TX: VarAC start %1: SENT, completed (key-up to end %2 s)").arg(m_open.n).arg(air, 0, 'f', 1));
+    else if (m_open.keyed > 0)
+        m_log(QString("TX: VarAC start %1: SENT, a connect: %2 (%3)").arg(m_open.n).arg(how, keyed));
+    else
+        m_log(QString("TX: VarAC start %1: NOT SENT, a connect: %2 (VARA never keyed)").arg(m_open.n).arg(how));
+    m_open = Open{};
+}
+
+void VaraLayer::noEnd(const QString &why) {
+    if (!m_open.n) return;
+    m_log(QString("VarAC: start %1: no end seen (%2; VARA keyed %3 time%4)")
+              .arg(m_open.n).arg(why).arg(m_open.keyed).arg(m_open.keyed == 1 ? "" : "s"));
+    m_log(m_open.keyed > 0
+              ? QString("TX: VarAC start %1: SENT (VARA keyed; no end seen: %2)").arg(m_open.n).arg(why)
+              : QString("TX: VarAC start %1: NOT SENT (VARA never keyed; %2)").arg(m_open.n).arg(why));
+    m_open = Open{};
+}
+
 void VaraLayer::keep(bool kiss, const QByteArray &payload, const QString &shown) {
     // VarAC sends a CQ as two identical CQFRAME lines 10 s apart on its own clock, without
     // waiting for an answer (measured 2026-11-20 17:11). Two passed on at once: VARA sends
     // one and answers WRONG to the other. An identical line is kept once.
+    int n = ++m_startN;
     if (!kiss) {
         for (const Kept &k : m_kept) {
             if (!k.kiss && k.payload == payload) {
-                m_log("layer: VarAC said, the same line is already kept, not kept twice: " + shown);
+                m_log(QString("VarAC: start %1: the same line is already kept (start %2), not kept twice: %3")
+                          .arg(n).arg(k.n).arg(shown));
+                m_log(QString("TX: VarAC start %1: NOT SENT (the same line as start %2, which is kept once)").arg(n).arg(k.n));
                 return;
             }
         }
     }
-    m_kept.append({kiss, payload, nowS()});
-    m_log("layer: VarAC said, kept back until the release: " + shown);
+    m_kept.append({kiss, payload, nowS(), n});
+    m_log(QString("VarAC: start %1 kept back until the release: %2").arg(n).arg(shown));
 }
 
 bool VaraLayer::dropKept(const QString &why) {
     bool hadConnect = false;
     double now = nowS();
     for (const Kept &k : m_kept) {
-        if (!k.kiss && k.payload.toUpper().startsWith("CONNECT ")) hadConnect = true;
-        m_log(QString("layer: kept start command thrown away after %1 s (%2): %3")
-                  .arg(now - k.t, 0, 'f', 1)
+        if (isConnect(k)) hadConnect = true;
+        m_log(QString("VarAC: start %1 thrown away after %2 s (%3): %4")
+                  .arg(k.n).arg(now - k.t, 0, 'f', 1)
                   .arg(why, k.kiss ? QString("KISS frame, %1 bytes").arg(k.payload.size())
                                    : QString::fromLatin1(k.payload)));
+        m_log(QString("TX: VarAC start %1: NOT SENT (kept back %2 s, then thrown away: %3)")
+                  .arg(k.n).arg(now - k.t, 0, 'f', 1).arg(why));
     }
     m_kept.clear();
     return hadConnect;
@@ -304,31 +364,41 @@ void VaraLayer::passKept() {
         QString shown = k.kiss ? QString("KISS frame, %1 bytes").arg(k.payload.size())
                                : QString::fromLatin1(k.payload);
         if (!to) {
-            m_log("layer: kept start command not passed on (VARA's side is closed): " + shown);
+            m_log(QString("VarAC: start %1 not given to VARA (VARA's side is closed): %2").arg(k.n).arg(shown));
+            m_log(QString("TX: VarAC start %1: NOT SENT (VARA's side is closed)").arg(k.n));
             continue;
         }
         to->write(k.kiss ? k.payload : k.payload + '\r');
         to->flush();
-        m_log(QString("layer: kept start command passed on to VARA after %1 s: %2").arg(now - k.t, 0, 'f', 1).arg(shown));
+        m_log(QString("VarAC: start %1 given to VARA after %2 s: %3").arg(k.n).arg(now - k.t, 0, 'f', 1).arg(shown));
+        passed(k.n, isConnect(k));
         m_burstT = now;
     }
 }
 
 // -- the hold ------------------------------------------------------------------------
-bool VaraLayer::hold() {
-    if (m_held) return true;
-    if (!connected()) return false;
-    m_held = true;
-    toVarac("BUSY ON");
-    toVara("LISTEN OFF", true);
+bool VaraLayer::hold(bool listening) {
+    if (!m_held) {
+        if (!connected()) return false;
+        m_held = true;
+        toVarac("BUSY ON");
+    }
+    setDeaf(!listening);
     return true;
+}
+
+void VaraLayer::setDeaf(bool deaf) {
+    if (deaf == m_deaf) return;
+    m_deaf = deaf;
+    if (deaf) toVara("LISTEN OFF", true);
+    else for (const QString &line : m_varacListen) toVara(line, true);
 }
 
 bool VaraLayer::release() {
     if (!m_held) return false;
     m_held = false;
     passKept();
-    for (const QString &line : m_varacListen) toVara(line, true);
+    setDeaf(false);
     if (m_varaBusy) say("release: VARA itself says busy; BUSY OFF left to VARA");
     else toVarac("BUSY OFF");
     return true;
@@ -348,7 +418,7 @@ QString VaraLayer::status() const {
     if (!m_cmd.varac) return QString("layer: waiting for VarAC on port %1").arg(m_cmd.listenPort);
     if (!m_cmd.varaOpen) return QString("layer: VarAC connected, VARA not listening on port %1").arg(m_cmd.varaPort);
     QString s = "layer: VarAC and VARA connected";
-    if (m_held) s += "; VarAC told BUSY, VARA told LISTEN OFF";
+    if (m_held) s += m_deaf ? "; VarAC told BUSY, VARA told LISTEN OFF" : "; VarAC told BUSY, VARA listening";
     if (!m_kept.isEmpty()) s += QString("; %1 start command(s) kept").arg(m_kept.size());
     return s;
 }

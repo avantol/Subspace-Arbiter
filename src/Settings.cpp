@@ -33,6 +33,7 @@ Settings Settings::load(const QString &iniPath) {
     s.statePollS = num("timing/state_poll_s", s.statePollS);
     s.renewS = num("timing/renew_s", s.renewS);
     s.subspaceFrameGapS = num("timing/subspace_frame_gap_s", s.subspaceFrameGapS);
+    s.subspaceReplyMaxS = num("timing/subspace_reply_max_s", s.subspaceReplyMaxS);
     s.varacDeadS = num("timing/varac_dead_s", s.varacDeadS);
     s.varaStaleS = num("timing/vara_stale_s", s.varaStaleS);
     s.varaPttMatchS = num("timing/vara_ptt_match_s", s.varaPttMatchS);
@@ -87,6 +88,10 @@ QString Settings::defaultIniText() {
         "# its PTT drops. measured: 1.2 to 1.6 s between frames, 1.4 s between two queued\n"
         "# messages (WM8Q 2026-10-29); must stay under the 3.75 s Subspace slot.\n"
         "subspace_frame_gap_s = 2.5\n"
+        "# subspace_reply_max_s: [study] the longest time Subspace keeps the radio after a\n"
+        "# message to hear the reply it expects, whatever time Subspace itself names.\n"
+        "# chosen: 120 s, over Subspace's longest allowance (Slow speed, 96 s).\n"
+        "subspace_reply_max_s = 120\n"
         "# varac_dead_s: VarAC refreshes its own instance row's keepalive in VarAC.db about\n"
         "# every 10 to 20 s (measured); when that stops this long, VarAC is gone and an\n"
         "# open link with it. chosen: 90 s.\n"

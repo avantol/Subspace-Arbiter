@@ -450,7 +450,7 @@ class FakeSubspace:
             self.flrig.key(0, "Hamlib")
 
     def send(self, frames=1, frame_s=0.5, gap_s=0.3, text="WM8Q: K7RIE HELLO", give_up_s=None,
-             silent_after_grant=False, at_ask=None, halt_after_grant_s=None):
+             silent_after_grant=False, at_ask=None, halt_after_grant_s=None, reply_ms=None):
         """The operator's Send in the study Subspace. While the arbiter's asking stands, the
         message's first frame waits for TX.GRANT; a lapsed asking lets it go (as before the
         study); give_up_s = the operator halts the waiting message after that long;
@@ -459,7 +459,9 @@ class FakeSubspace:
         itself (to time the ask against something else);
         halt_after_grant_s = the operator halts the granted message that long after the
         grant, before its key-up: the end report, and 0.2 s later a PTT off although
-        nothing was keyed (the program's stopTx2(), station log 2026-11-20 19:14:56).
+        nothing was keyed (the program's stopTx2(), station log 2026-11-20 19:14:56);
+        reply_ms = the end report carries REPLY_MS (a Subspace with the reply wait): how
+        long the message's reply is waited for, 0 = it expects none.
         Returns "refused", "given up", "halted", or how it went out."""
         if not self.tx_enabled:
             self.refused_sends += 1
@@ -509,8 +511,17 @@ class FakeSubspace:
         done = self.transmit(frames=frames, frame_s=frame_s, gap_s=gap_s, text=text)
         if how == "granted" and (done or self.granted_id == aid):
             self.granted_id = 0
-            self.push("TX.ASK", ASK_ID=aid, ASKING=False)
+            if reply_ms is None:
+                self.push("TX.ASK", ASK_ID=aid, ASKING=False)
+            else:
+                self.reply_id = aid
+                self.push("TX.ASK", ASK_ID=aid, ASKING=False, REPLY_MS=reply_ms)
         return how
+
+    def reply(self, ms):
+        """[study] the reply wait of the message last sent: a reply's frame came in (ms more
+        from now), or the reply is complete (0)"""
+        self.push("TX.REPLY", ASK_ID=self.reply_id, REPLY_MS=ms)
 
     def pending(self, keyup_in_ms=None):
         """A slotted frame waits for its key-up (keyup_in_ms from now), or stops waiting (None).

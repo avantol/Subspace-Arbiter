@@ -40,7 +40,7 @@ Arbiter::Arbiter(const Settings &s, Log &log, QObject *parent)
     connect(m_subspace, &SubspaceLink::eventQueued, this, &Arbiter::decideSoon);
 
     subspace.name = "Subspace"; subspace.enabled = s.holdSubspace; subspace.renewS = s.renewS;
-    subspace.own = {Reason::SUBSPACE};
+    subspace.own = {Reason::SUBSPACE, Reason::SUBSPACE_REPLY};
     fldigi.name = "fldigi"; fldigi.enabled = s.holdFldigi; fldigi.renewS = s.renewS;
     fldigi.own = {Reason::FLDIGI};
     fldigi.leased = false;        // rx_only has no lease
@@ -103,10 +103,18 @@ void Arbiter::subspaceEvents(double now) {
         if (t == "RIG.PTT") {
             bool on = p.contains("PTT") ? p.value("PTT").toBool()
                                         : msg.value("value").toString().toLower() == "on";
-            if (on) { m_ssPtt = true; m_ssMsg = true; if (m_ssGrantId != 0) m_ssGrantKeyed = true; }
+            if (on) { m_ssPtt = true; m_ssMsg = true; m_ssNoGap = false; if (m_ssGrantId != 0 && !m_ssGrantKeyed) { m_ssGrantKeyed = true; m_ssGrantKeyT = now; } }
             // a PTT off that follows no PTT on ends no frame: a message halted before its
             // key-up sends one (station 2026-11-20 19:14:56: VarAC held again for 2.6 s)
-            else { if (m_ssPtt) m_ssLastOffT = now; m_ssPtt = false; }
+            else {
+                if (m_ssPtt) m_ssLastOffT = now;
+                m_ssPtt = false;
+                if (m_ssNoGap) m_ssMsg = false;   // its end was reported: no frame follows
+                // the polled "transmitting" is older than this event (bench 2026-11-21:
+                // it stood up to 1 s after the PTT off); the ARQ state is asked for anew
+                if (m_ssBusyTx) m_ssBusy = m_ssBusyTx = false;
+                m_ssBusyPolledT = 0;
+            }
         } else if (t == "TX.ASK") {
             // [study] ASKING true: a message's first frame waits for a grant. false: that
             // ask is given up, or the granted message is over.
@@ -123,11 +131,40 @@ void Arbiter::subspaceEvents(double now) {
                 m_ssAskId = 0;
                 m_ssAskTold.clear();
                 m_log(QString("Subspace: no longer asks (message %1)").arg(id));
+                m_log(QString("TX: Subspace message %1: NOT SENT (given up %2 s after it asked)")
+                          .arg(id).arg(now - m_ssAskT, 0, 'f', 1));
             } else if (id == m_ssGrantId && id != 0) {
                 m_log(QString("Subspace: transmission over (message %1, %2 s after the grant)")
                           .arg(id).arg(now - m_ssGrantT, 0, 'f', 1));
+                m_log(m_ssGrantKeyed
+                          ? QString("TX: Subspace message %1: SENT, completed (cleared to send %2 s after it asked; key-up to end %3 s)")
+                                .arg(id).arg(m_ssGrantWaitS, 0, 'f', 1).arg(now - m_ssGrantKeyT, 0, 'f', 1)
+                          : QString("TX: Subspace message %1: NOT SENT (cleared to send, but ended without a key-up)").arg(id));
                 m_ssGrantId = 0;
                 m_ssGrantKeyed = false;
+                if (p.contains("REPLY_MS")) {
+                    m_ssNoGap = true;
+                    if (!m_ssPtt) m_ssMsg = false;
+                    double replyS = qMin(p.value("REPLY_MS").toDouble() / 1000.0, m_s.subspaceReplyMaxS);
+                    if (replyS > 0) {
+                        m_ssReplyId = id;
+                        m_ssReplyUntil = now + replyS;
+                        m_log(QString("Subspace: keeps the radio for the reply it expects (message %1, up to %2 s)")
+                                  .arg(id).arg(replyS, 0, 'f', 1));
+                    }
+                }
+            }
+        } else if (t == "TX.REPLY") {
+            // [study] the reply wait of the message just sent: a new time, or 0 = over
+            qint64 id = qint64(p.value("ASK_ID").toDouble());
+            if (id != 0 && id == m_ssReplyId) {
+                double replyS = qMin(p.value("REPLY_MS").toDouble() / 1000.0, m_s.subspaceReplyMaxS);
+                if (replyS > 0) {
+                    m_ssReplyUntil = now + replyS;
+                    m_log(QString("Subspace: a reply is coming in; the wait goes on (up to %1 s more)").arg(replyS, 0, 'f', 1));
+                } else {
+                    endSubspaceReply("Subspace has its reply");
+                }
             }
         } else if (t == "TX.COMPLETE") {
             m_ssMsg = false;
@@ -162,6 +199,7 @@ void Arbiter::subspaceEvents(double now) {
             m_ssPendingUntil = 0;
             m_ssAskId = 0;
             if (m_ssGrantId != 0) endSubspaceGrant("Subspace is closing");
+            if (m_ssReplyId != 0) endSubspaceReply("Subspace is closing");
             m_log("Subspace: closing");
         }
     }
@@ -201,6 +239,8 @@ void Arbiter::subspaceAsk(double now) {
         }
         m_ssAskOn = false;
         m_ssAskSentT = 0;
+        if (m_ssAskId != 0)
+            m_log(QString("TX: Subspace message %1: NOT KNOWN (asking was switched off while it waited)").arg(m_ssAskId));
         m_ssAskId = 0;
         return;
     }
@@ -227,8 +267,16 @@ void Arbiter::subspaceAsk(double now) {
 
 void Arbiter::endSubspaceGrant(const QString &why) {
     m_log(QString("Subspace: grant over (%1)").arg(why));
+    m_log(QString("TX: Subspace message %1: %2 (%3)").arg(m_ssGrantId)
+              .arg(m_ssGrantKeyed ? "SENT, its end not reported" : "NOT SENT", why));
     m_ssGrantId = 0;
     m_ssGrantKeyed = false;
+}
+
+void Arbiter::endSubspaceReply(const QString &why) {
+    m_log(QString("Subspace: reply wait over (%1)").arg(why));
+    m_ssReplyId = 0;
+    m_ssReplyUntil = 0;
 }
 
 void Arbiter::considerSubspace(double now) {
@@ -247,8 +295,10 @@ void Arbiter::considerSubspace(double now) {
     qint64 const id = m_ssAskId;
     m_ssAskId = 0;
     m_ssAskTold.clear();
+    if (m_ssReplyId != 0) endSubspaceReply("Subspace transmits again");
     m_ssGrantId = id;
     m_ssGrantT = now;
+    m_ssGrantWaitS = now - m_ssAskT;
     m_ssGrantKeyed = false;
     m_subspace->request("TX.GRANT", {{"ASK_ID", double(id)}, {"GRANT", true}}, [this, id](const QJsonObject &r) {
         // no answer: the rule in decide() ends a grant that is followed by no key-up
@@ -275,6 +325,9 @@ void Arbiter::considerFldigi(double now) {
     }
     m_fldigi->grant(m_flWaitSerial);
     m_log(QString("fldigi: granted (start %1, %2 s after it asked)").arg(m_flWaitSerial).arg(now - m_flWaitT, 0, 'f', 1));
+    m_flGrantSerial = m_flWaitSerial;
+    m_flGrantT = now;
+    m_flGrantWaitS = now - m_flWaitT;
     m_flWaitSerial = 0;
     m_flWaitTold.clear();
     m_flLastTxT = now;
@@ -285,13 +338,17 @@ void Arbiter::considerFldigi(double now) {
 void Arbiter::subspaceStatePoll(double now) {
     if (now - m_ssBusyPolledT < m_s.statePollS) return;
     m_ssBusyPolledT = now;
-    m_subspace->request("STATION.GET_BUSY", {}, [this](const QJsonObject &r) {
+    m_subspace->request("STATION.GET_BUSY", {}, [this, now](const QJsonObject &r) {
         if (r.isEmpty()) return;
         QJsonObject p = r.value("params").toObject();
         QString reason = p.value("BUSY_REASON").toString();
-        m_ssBusy = p.value("BUSY").toBool() &&
-                   (reason == "arq_tx" || reason == "arq_negotiating" || reason == "transmitting");
-        if (p.value("PTT").toBool()) { m_ssPtt = true; m_ssMsg = true; }
+        bool busy = p.value("BUSY").toBool();
+        // "transmitting" and PTT are also pushed (RIG.PTT), at the instant: an answer
+        // asked for before the last pushed PTT off is older than that event
+        bool fresh = now > m_ssLastOffT;
+        m_ssBusyTx = fresh && busy && reason == "transmitting";
+        m_ssBusy = m_ssBusyTx || (busy && (reason == "arq_tx" || reason == "arq_negotiating"));
+        if (fresh && p.value("PTT").toBool()) { m_ssPtt = true; m_ssMsg = true; }
     }, 1000);
 }
 
@@ -325,12 +382,14 @@ void Arbiter::decide() {
         // [study] a program that stopped has nothing: its ask, its grant and its
         // transmitting end with its connection, and the next Subspace is asked anew
         if (m_ssGrantId != 0) endSubspaceGrant("Subspace is not connected");
+        if (m_ssReplyId != 0) endSubspaceReply("Subspace is not connected");
         if (m_ssPtt || m_ssMsg || m_ssBusy) m_log("Subspace: not connected; no longer counted as transmitting");
-        m_ssPtt = m_ssMsg = m_ssBusy = false;
+        m_ssPtt = m_ssMsg = m_ssBusy = m_ssBusyTx = false;
         m_ssPendingUntil = 0;
         m_ssAskSupport = -1;
         m_ssAskOn = false;
         m_ssAskSentT = 0;
+        if (m_ssAskId != 0) m_log(QString("TX: Subspace message %1: NOT SENT (Subspace is not connected)").arg(m_ssAskId));
         m_ssAskId = 0;
         m_ssAskTold.clear();
     }
@@ -358,8 +417,10 @@ void Arbiter::decide() {
     }
     // still transmitting for subspace_frame_gap_s after the last PTT off: covers the gap between
     // frames and the 1.4 s between two queued messages (measured 2026-10-29)
-    bool ssTx = m_ssPtt || m_ssMsg || m_ssBusy || now - m_ssLastOffT < m_s.subspaceFrameGapS ||
+    // [study] not after a message whose end Subspace reported: no frame follows that one
+    bool ssTx = m_ssPtt || m_ssMsg || m_ssBusy || (!m_ssNoGap && now - m_ssLastOffT < m_s.subspaceFrameGapS) ||
                 m_ssGrantId != 0;
+    if (m_ssReplyId != 0 && now >= m_ssReplyUntil) endSubspaceReply("no reply came in the time allowed");
     // a frame waiting for its key-up (TX.PENDING) holds the others before Subspace keys
     // (W8UFO 10 Nov: VarAC keyed 185 ms before Subspace's slot; VarAC takes ~1 s to obey
     // its lock), but does not shield Subspace itself: a program already on the air (a VARA
@@ -368,6 +429,20 @@ void Arbiter::decide() {
     bool ssPending = m_ssPendingUntil > 0 && now < m_ssPendingUntil && !subspace.held;
     bool flTx = m_fldigi->transmitting();
     if (flTx) m_flLastTxT = now;
+    // [study] the end of a granted fldigi transmission, in the log as Subspace's is (CAT Watch
+    // matches a key-up to its grant by these two lines). Also the end of a grant fldigi did
+    // not take, or one cut short because fldigi stopped answering.
+    if (m_flGrantSerial != 0 && !m_flGrantOnAir && m_fldigi->state() == "TX") { m_flGrantOnAir = true; m_flGrantOnAirT = now; }
+    if (m_flGrantSerial != 0 && !flTx) {
+        m_log(QString("fldigi: transmission over (start %1, %2 s after the grant)")
+                  .arg(m_flGrantSerial).arg(now - m_flGrantT, 0, 'f', 1));
+        m_log(m_flGrantOnAir
+                  ? QString("TX: fldigi start %1: SENT, completed (cleared to send %2 s after it asked; key-up to end %3 s)")
+                        .arg(m_flGrantSerial).arg(m_flGrantWaitS, 0, 'f', 1).arg(now - m_flGrantOnAirT, 0, 'f', 1)
+                  : QString("TX: fldigi start %1: NOT SENT (cleared to send, but fldigi never transmitted)").arg(m_flGrantSerial));
+        m_flGrantSerial = 0;
+        m_flGrantOnAir = false;
+    }
     // VARA transmitting: PTT on now (a PTT ON without OFF counts for a minute), or a burst or
     // connect request within vara_burst_hold_s, so the gaps between bursts keep the hold.
     // [unkey-block] Not while VarAC is held: a held VarAC puts nothing on the air (VarAC:
@@ -399,6 +474,7 @@ void Arbiter::decide() {
     m_sources[Reason::VARA_TX] = vaBurst && !va.link;
     m_sources[Reason::FLDIGI] = flTx;
     m_sources[Reason::SUBSPACE] = ssTx || ssPending;
+    m_sources[Reason::SUBSPACE_REPLY] = m_ssReplyId != 0;
     m_sources[Reason::UNKNOWN] = unknown;
 
     subspace.connected = m_subspace->up();
@@ -424,6 +500,13 @@ void Arbiter::decide() {
     // while the radio is free is already in m_sources here (the layer reports it at once).
     int flWait = m_fldigi->asks() ? m_fldigi->waiting() : 0;
     if (flWait != m_flWaitSerial) {
+        // a start that ends while it still waits (given up in fldigi, or fldigi gone): a
+        // granted start has left m_flWaitSerial already, so this one never got its grant
+        if (m_flWaitSerial != 0) {
+            m_log(QString("fldigi: no longer asks (start %1)").arg(m_flWaitSerial));
+            m_log(QString("TX: fldigi start %1: NOT SENT (given up %2 s after it asked)")
+                      .arg(m_flWaitSerial).arg(now - m_flWaitT, 0, 'f', 1));
+        }
         m_flWaitSerial = flWait;
         m_flWaitT = now;
         m_flWaitTold.clear();
@@ -550,7 +633,8 @@ QString Arbiter::setupText() const {
         "  %5 and must not start VARA itself: when VarAC starts VARA it first\n"
         "  writes its own ports into VARA.ini (measured 2026-11-20). In VarAC's\n"
         "  settings file, with VarAC closed: VarahfLaunchOnModemConnect=OFF\n"
-        "  (not yet tried). Start order: VARA, the Arbiter, VarAC.\n"
+        "  (used at WM8Q since 2026-11-22). Start VARA and the Arbiter before\n"
+        "  VarAC.\n"
         "  Neither \"Log VARA commands\" nor the cluster PTT lock is used.\n"
         "  In VarAC's settings file, with VarAC closed: under [RIG_CONTROL]\n")
             .arg(m_s.layerVaraCmdPort).arg(m_s.layerVaraCmdPort + 1).arg(m_s.layerVaraKissPort)
@@ -648,7 +732,9 @@ bool Arbiter::hold(Program &p, const QString &reason) {
         return true;
     }
     if (&p == &fldigi) return m_fldigi->hold();
-    if (&p == &varac) return m_layer ? m_layer->hold() : m_lever->hold();
+    // [study] during Subspace's reply wait nobody here transmits: VarAC starts nothing
+    // (BUSY ON), VARA still answers a caller (operator 2026-11-21)
+    if (&p == &varac) return m_layer ? m_layer->hold(reason == Reason::SUBSPACE_REPLY) : m_lever->hold();
     return false;
 }
 
@@ -660,6 +746,8 @@ void Arbiter::renew(Program &p, const QString &reason) {
             if (q.value("OK").toBool() && (q.value("CHANGED").toBool() || q.value("REMOTE").toBool()))
                 m_ssHoldOwned = true;
         });
+    } else if (&p == &varac && m_layer) {
+        m_layer->hold(reason == Reason::SUBSPACE_REPLY);   // the reason changed: listening or not
     } else if (&p == &varac && m_lever) {
         m_lever->renew();
     }

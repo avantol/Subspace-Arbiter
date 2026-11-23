@@ -22,7 +22,8 @@ struct Settings {
     double statePollS = 2;         // chosen: STATION.GET_BUSY backstop
     double renewS = 60;            // chosen: well under Subspace's 300 s lease
     double subspaceFrameGapS = 2.5;// measured: PTT drops 1.2-1.6 s between frames, 1.4 s between queued messages
-    double varacDeadS = 90;        // chosen: VarAC refreshes its keepalive every 10-20 s (measured)
+    double subspaceReplyMaxS = 120;// chosen: over Subspace's longest reply allowance (Slow speed, 96 s)
+    double varacDeadS = 90;       // chosen: VarAC refreshes its keepalive every 10-20 s (measured)
     double varaStaleS = 600;       // chosen: fallback when VarAC.db is unreadable
     double varaPttMatchS = 2;      // measured: VarAC's log stamps are whole seconds
     double varaBurstHoldS = 12;    // measured: VARA pauses up to 11.5 s inside a link, 3 s between connect requests

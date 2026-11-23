@@ -34,7 +34,10 @@ public:
     bool connected() const { return m_cmd.varac && m_cmd.varaOpen; }   // VarAC and VARA both
     QString status() const;
     VaracWatch::Snapshot snapshot() const;   // the same four facts the log watch gives, to the ms
-    bool hold();      // false while VarAC or VARA is not connected: nothing to hold
+    // false while VarAC or VARA is not connected: nothing to hold. listening: VarAC is told
+    // BUSY ON but VARA keeps answering callers (a wait in which no one here transmits);
+    // called again on a standing hold it only changes that
+    bool hold(bool listening = false);
     bool release();   // the kept start commands go to VARA, then VarAC's own LISTEN lines, then BUSY OFF
     bool held() const { return m_held; }   // ends by itself when VarAC closes its connection
     int kept() const { return int(m_kept.size()); }
@@ -59,6 +62,16 @@ private:
         bool kiss;
         QByteArray payload;
         double t;
+        int n;                            // its start number
+    };
+    // The start command VARA has now: every start command of VarAC's gets a number when it
+    // arrives, and one log line for its end, as Subspace's messages and fldigi's starts have.
+    struct Open {
+        int n = 0;                        // 0 = none
+        double t = 0;                     // when it went to VARA
+        int keyed = 0;                    // VARA's PTT ON lines since then
+        double onT = 0;                   // the first of them
+        bool connect = false;             // (set by passed()) a CONNECT: ends with CONNECTED or DISCONNECTED
     };
 
     void open(Pipe &p, const QString &name, int listenPort, int varaPort);
@@ -72,10 +85,15 @@ private:
     void toVarac(const QString &line);
     void toVara(const QString &line, bool own);
     void started(const QString &what);
+    void passed(int n, bool connect);            // start n is at VARA now
+    void endOpen(const QString &how);            // the one log line for its end
+    void noEnd(const QString &why);              // it got no end of its own
+    static bool isConnect(const Kept &k) { return !k.kiss && k.payload.toUpper().startsWith("CONNECT "); }
     void keep(bool kiss, const QByteArray &payload, const QString &shown);
     bool dropKept(const QString &why);   // true when a CONNECT was among them
     void passKept();
     void say(const QString &text);       // one traffic line in the log, when layer_log_lines is on
+    void setDeaf(bool deaf);             // LISTEN OFF to VARA, or VarAC's own LISTEN lines again
 
     Log &m_log;
     Pipe m_cmd, m_data, m_kiss;
@@ -85,11 +103,14 @@ private:
     QString m_portTrouble;
 
     bool m_held = false;
+    bool m_deaf = false;             // VARA was told LISTEN OFF by the layer
     bool m_varaBusy = false;         // VARA's own last BUSY ON / BUSY OFF
     int m_ownOk = 0;                 // answers still to come to the layer's own LISTEN lines
     bool m_oweDisconnected = false;  // a kept CONNECT was thrown away: VarAC is told DISCONNECTED
     QStringList m_varacListen;       // VarAC's own LISTEN lines, in the order it sent them
     QList<Kept> m_kept;
+    int m_startN = 0;                // VarAC's start commands, counted since the arbiter started
+    Open m_open;
 
     bool m_link = false, m_ptt = false;
     double m_pttT = 0, m_burstT = 0;
