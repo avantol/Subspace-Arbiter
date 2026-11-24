@@ -58,7 +58,7 @@ Command line: `arbiter --console` (no window, log to the console),
 
 Log file: `%LOCALAPPDATA%\Arbiter\arbiter.log` on Windows,
 `~/.local/share/Arbiter/arbiter.log` on Linux. Settings, only if you
-create one: `%LOCALAPPDATA%\arbiter.ini` or `~/.config/arbiter.ini`.
+create one: `%LOCALAPPDATA%\Arbiter\arbiter.ini` or `~/.config/arbiter.ini`.
 
 ## Settings (only for exceptions)
 
