@@ -28,7 +28,8 @@
 <p class="sub">One radio, several programs (Subspace, fldigi, VarAC with VARA) through
 flrig. This is the collision-avoidance design of the test set: a program asks before it
 transmits. The earlier design, collision detection, is in arbiter_diagrams_CD.
-Arbiter 1.0.8-study18 (test set, not released), WM8Q, 2026-11-23.</p>
+Arbiter 1.0.8-study18 (test set, not released), WM8Q, 2026-11-23; sections 3 and 6 revised
+2026-11-24 for the decoy folder of CAT Watch study7.</p>
 
 <p class="rule"><b>No program transmits until the Arbiter says yes. One program has the radio at a
 time, and whatever has the radio finishes. The Arbiter never keys the radio and never refuses,
@@ -157,14 +158,14 @@ swallows or delays a PTT: a program that waits has not asked flrig for PTT yet.<
 <p class="sub" style="margin-top:4pt">Measured on WM8Q's station, 2026-11-22 16:37:59 to 16:40:02 local (Arbiter log). The grant came 0.5 s after Subspace's end report. A VarAC start command sent while VarAC is held follows the same shape: stored, then given to VARA at the release (bench, 29 cases).</p>
 
 <h2>3. Setup, once per station</h2>
-<p class="sub">CAT Watch's "Check setup" (WM8Q's copy for the test set) makes the three file changes with "Fix all" and shows each line below as OK or CHANGE.</p>
+<p class="sub">CAT Watch's "Check setup" (WM8Q's copy for the test set, study7) shows each line below as OK, CHANGE or INFO. "Fix all" makes every change marked (Fix): the three settings files and the decoy folder. "Fix selected" on the line "VarAC's VARA path" makes the decoy alone.</p>
 <table>
 <tr><th style="width:14%">Program</th><th>Setting</th><th style="width:34%">Why</th></tr>
 <tr><td class="t">Arbiter</td><td>In its settings file: <span class="mono">[varac]</span> <span class="mono">lever = layer</span>. Nothing else.</td><td>Turns on the connection between VarAC and VARA. Without the line the test Arbiter holds VarAC the old way.</td></tr>
 <tr><td class="t">Subspace</td><td>The test build. Settings &gt; Reporting: TCP API enabled, "Accept TCP requests" on, enough TCP connections, as before.</td><td>The Arbiter's wire to Subspace. A released Subspace does not ask and is held with its TX switch, as before.</td></tr>
 <tr><td class="t">fldigi</td><td>The test build. Its XML-RPC server on port 7362 is always on.</td><td>The Arbiter's wire to fldigi. A released fldigi does not ask and is held with receive-only, as before.</td></tr>
 <tr><td class="t">VARA</td><td>Command port 8310 (was 8300), KISS port 8110 (was 8100). Started by hand or by a start script, before VarAC.</td><td>Frees VARA's usual ports for the Arbiter, so VarAC needs no port change.</td></tr>
-<tr><td class="t">VarAC</td><td>In its settings file: <span class="mono">VarahfLaunchOnModemConnect=OFF</span>. "Safety PTT off every minute" stays OFF. The cluster PTT Lock is no longer needed.</td><td>When VarAC starts VARA it first writes its own port numbers into VARA's settings.</td></tr>
+<tr><td class="t">VarAC</td><td>In its settings file: <span class="mono">VarahfLaunchOnModemConnect=OFF</span>, and the VARA HF path points to the decoy, e.g. <span class="mono">C:\VARA_DECOY\VARA.exe</span>: a folder with an empty VARA.exe and a VARA.ini that holds VarAC's ports (8300, KISS 8100, KISS on). "Safety PTT off every minute" stays OFF. The cluster PTT Lock is no longer needed.</td><td>Every Save in VarAC's settings writes VarAC's ports into the VARA.ini beside that path: with the decoy, VARA's own file is left alone. VarAC must not start VARA itself: it would try to start the empty file.</td></tr>
 <tr><td class="t">flrig</td><td>Nothing.</td><td>The Arbiter is one more read-only client.</td></tr>
 </table>
 
@@ -283,10 +284,11 @@ inside the PC: the one between VarAC and VARA.</p>
 <li>Asking ends by itself when the Arbiter stops answering (Subspace 15 s, fldigi 3 s): both then transmit as without the Arbiter. VarAC cannot: its modem connection goes through the Arbiter.</li>
 <li>After a message that expects a reply, Subspace keeps the radio until the reply is in or its time runs out. The other programs wait that long.</li>
 <li>After a VarAC CQ, beacon or broadcast the radio is free at once. A caller who answers a CQ can find VarAC held, if another program was granted in that moment.</li>
-<li>VarAC writes its own port numbers into VARA's settings when its settings are saved. VARA reads them only at its next start; "Check setup" shows the change and puts the two lines back.</li>
-<li>Run at one station (WM8Q, Linux, since 2026-11-22) and on the bench. Not yet run on Windows.</li>
+<li>A Save in VarAC's settings writes VarAC's port numbers into the VARA.ini beside its VARA HF path. With the decoy that is the decoy's file: VARA's own file stays at 8310 / 8110. A station without the decoy still gets VARA's file changed; "Check setup" shows it and puts the lines back.</li>
+<li>Closing VarAC no longer closes VARA, because VarAC did not start it. A VARA left running stops the next start of VARA ("Another copy of VARA is running from this folder", W5TTA, 2026-11-24). Close VARA with the station, or let the start script look for it.</li>
+<li>Run at WM8Q (Linux, since 2026-11-22) and on the bench. W5TTA reports it running since 2026-11-23, with the decoy, on an FT-DX10 with a second VARA (a monitor copy on 8350) and a band-change scheduler; that station's logs have not been read at WM8Q. On Windows: one run, at WM8Q on 2026-11-23.</li>
 </ul>
 
-<p class="foot">Sources: Arbiter 1.0.8-study18, branch study-ask-grant, commit de42172 (github.com/avantol/Subspace-Arbiter); Subspace-Edition and fldigi-subspace, branch study-ask-grant. Settings.h: poll 200 ms, Subspace ask lease 15 s renewed every 5 s, fldigi ask lease 3 s (chosen), layer ports 8300 / 8100 and 8310 / 8110 (chosen). The step table: the Arbiter's log at WM8Q, 2026-11-22 16:37:59 to 16:40:02 local. Bench: tests/scenarios.py, 29 cases. The earlier design: arbiter_diagrams_CD.pdf (Arbiter 1.0.1, 2026-10-29).</p>
+<p class="foot">Sources: Arbiter 1.0.8-study18, branch study-ask-grant, commit de42172 (github.com/avantol/Subspace-Arbiter); Subspace-Edition and fldigi-subspace, branch study-ask-grant; CAT Watch 0.13.5-wm8q8-study7 (WM8Q's copy), which makes the decoy. Settings.h: poll 200 ms, Subspace ask lease 15 s renewed every 5 s, fldigi ask lease 3 s (chosen), layer ports 8300 / 8100 and 8310 / 8110 (chosen). The step table: the Arbiter's log at WM8Q, 2026-11-22 16:37:59 to 16:40:02 local. Bench: tests/scenarios.py, 29 cases. The earlier design: arbiter_diagrams_CD.pdf (Arbiter 1.0.1, 2026-10-29).</p>
 
 </body></html>
