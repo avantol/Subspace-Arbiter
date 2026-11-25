@@ -1,11 +1,14 @@
 cmake_minimum_required(VERSION 3.22)
-project(Arbiter VERSION 1.0.8 LANGUAGES CXX)
+project(Arbiter VERSION 1.0.9 LANGUAGES CXX)
 
 # The version string the program shows and the packages carry. CI passes the
 # tag (v1.0.0 -> 1.0.0) or a branch build (1.0.0-dev.<sha>); a plain build
 # uses the project version.
-# [study] branch study-ask-grant: every build from it says so.
-set(ARBITER_VERSION_STRING "${PROJECT_VERSION}-study18" CACHE STRING "version shown by the program")
+# [wm8qlabel] One counter for both branches, plain numbers: a build that leaves this PC
+# takes the next number, above every release page, and no number is used twice (Andy
+# 2026-11-25; the "-studyN" suffix is retired). Branch study-ask-grant took 1.0.9 while
+# master is at 1.0.8, so master's next release is 1.0.10 or later.
+set(ARBITER_VERSION_STRING "${PROJECT_VERSION}" CACHE STRING "version shown by the program")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)

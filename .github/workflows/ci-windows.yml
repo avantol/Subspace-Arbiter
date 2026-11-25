@@ -36,9 +36,10 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF#refs/tags/v}"
           else
-            # [study] a branch whose CMakeLists.txt names its builds ("-study18") keeps that name
-            SUFFIX="$(grep -oP 'ARBITER_VERSION_STRING "\$\{PROJECT_VERSION\}\K[^"]+' CMakeLists.txt || true)"
-            VER="$(grep -oP 'project\(Arbiter VERSION \K[0-9.]+' CMakeLists.txt)${SUFFIX:--dev.${GITHUB_SHA:0:8}}"
+            # [wm8qlabel] a build started by hand is one to hand out: it carries its plain
+            # number from CMakeLists.txt; an automatic push build is a dev build
+            VER="$(grep -oP 'project\(Arbiter VERSION \K[0-9.]+' CMakeLists.txt)"
+            if [[ "${GITHUB_EVENT_NAME}" != workflow_dispatch ]]; then VER="${VER}-dev.${GITHUB_SHA:0:8}"; fi
           fi
           echo "ver=$VER" >> "$GITHUB_OUTPUT"
           echo "Version: $VER"
